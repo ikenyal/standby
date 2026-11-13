@@ -19,7 +19,7 @@ to the next on their own. Everything is serverless and costs close to nothing wh
 flowchart LR
   O[Organizer] -->|POST /events, /attendees| API[API Gateway<br/>HTTP API]
   API --> L1[Lambda<br/>api]
-  L1 -->|seat taken only if seated < capacity<br/>in one transaction| DB[(DynamoDB<br/>on-demand)]
+  L1 -->|seat taken only while seats remain<br/>checked inside one transaction| DB[(DynamoDB<br/>on-demand)]
   L1 -->|one execution per seat hold| SF{{Step Functions<br/>Standard}}
 
   SF -->|.waitForTaskToken<br/>timeout = hold window| L2[Lambda<br/>send invite]
