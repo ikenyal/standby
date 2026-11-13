@@ -1,0 +1,277 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Standby — the waitlist that lives in your calendar (seat holds via calendar RSVPs)
+
+Parameters:
+  MailDomain:
+    Type: String
+    Description: Domain (or subdomain) verified in SES whose MX points to SES inbound in this region
+  OrganizerEmail:
+    Type: String
+    Description: Organizer address on MailDomain; invites come from here and calendar replies go here
+  OrganizerName:
+    Type: String
+    Default: Standby
+  ApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Shared secret for the organizer API (x-standby-key header)
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [arm64]
+    MemorySize: 256
+    Timeout: 30
+    CodeUri: src/
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+        ORGANIZER_EMAIL: !Ref OrganizerEmail
+        ORGANIZER_NAME: !Ref OrganizerName
+        MAIL_DOMAIN: !Ref MailDomain
+        STATE_MACHINE_ARN: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-hold
+
+Resources:
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+
+  # ---------------------------------------------------------------- inbound mail
+  InboundBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-raw-mail
+            Status: Enabled
+            ExpirationInDays: 7
+
+  InboundBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InboundBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowSESPuts
+            Effect: Allow
+            Principal: { Service: ses.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub ${InboundBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+                AWS:SourceArn: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:receipt-rule-set/${AWS::StackName}-rules:receipt-rule/${AWS::StackName}-inbound
+
+  InboundPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref InboundFunction
+      Principal: ses.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  ReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: !Sub ${AWS::StackName}-rules
+
+  ReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: [InboundBucketPolicy, InboundPermission]
+    Properties:
+      RuleSetName: !Ref ReceiptRuleSet
+      Rule:
+        Name: !Sub ${AWS::StackName}-inbound
+        Enabled: true
+        ScanEnabled: true
+        TlsPolicy: Optional
+        Recipients: [!Ref MailDomain]
+        Actions:
+          - S3Action:
+              BucketName: !Ref InboundBucket
+              ObjectKeyPrefix: inbound/
+          - LambdaAction:
+              FunctionArn: !GetAtt InboundFunction.Arn
+              InvocationType: Event
+
+  InboundFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: inbound.handler
+      Environment:
+        Variables:
+          INBOUND_BUCKET: !Ref InboundBucket
+          INBOUND_PREFIX: inbound/
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - S3ReadPolicy: { BucketName: !Ref InboundBucket }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-hold" }
+        - Statement:
+            - Effect: Allow
+              Action: [states:SendTaskSuccess, states:SendTaskFailure]
+              Resource: "*"
+            - Effect: Allow
+              Action: [ses:SendEmail, ses:SendRawEmail]
+              Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+
+  # ---------------------------------------------------------------- hold workflow
+  InviteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: steps.invite
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - Statement:
+            - Effect: Allow
+              Action: [ses:SendEmail, ses:SendRawEmail]
+              Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+
+  ConfirmFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: steps.confirm
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+
+  ReleaseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: steps.release
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-hold" }
+        - Statement:
+            - Effect: Allow
+              Action: [ses:SendEmail, ses:SendRawEmail]
+              Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+
+  HoldStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ${AWS::StackName}-hold
+      Type: STANDARD
+      Policies:
+        - LambdaInvokePolicy: { FunctionName: !Ref InviteFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref ConfirmFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref ReleaseFunction }
+      DefinitionSubstitutions:
+        InviteArn: !GetAtt InviteFunction.Arn
+        ConfirmArn: !GetAtt ConfirmFunction.Arn
+        ReleaseArn: !GetAtt ReleaseFunction.Arn
+      Definition:
+        Comment: One execution per seat hold. The calendar RSVP is the task-token callback.
+        StartAt: SendInviteAndWait
+        States:
+          SendInviteAndWait:
+            Type: Task
+            Comment: Send a calendar invite, then wait for the attendee's RSVP (or the hold to expire)
+            Resource: arn:aws:states:::lambda:invoke.waitForTaskToken
+            Parameters:
+              FunctionName: ${InviteArn}
+              Payload:
+                hold_id.$: $.hold_id
+                token.$: $$.Task.Token
+            TimeoutSecondsPath: $.hold_seconds
+            ResultPath: $.reply
+            Catch:
+              - ErrorEquals: [States.Timeout]
+                ResultPath: $.error
+                Next: ExpireAndPassOn
+            Next: WhatDidTheySay
+          WhatDidTheySay:
+            Type: Choice
+            Choices:
+              - Variable: $.reply.partstat
+                StringEquals: ACCEPTED
+                Next: ConfirmSeat
+            Default: DeclineAndPassOn
+          ConfirmSeat:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ConfirmArn}
+              Payload:
+                hold_id.$: $.hold_id
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
+                MaxAttempts: 3
+            End: true
+          DeclineAndPassOn:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ReleaseArn}
+              Payload:
+                hold_id.$: $.hold_id
+                reason: DECLINED
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
+                MaxAttempts: 3
+            End: true
+          ExpireAndPassOn:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ReleaseArn}
+              Payload:
+                hold_id.$: $.hold_id
+                reason: EXPIRED
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
+                MaxAttempts: 3
+            End: true
+
+  # ---------------------------------------------------------------- organizer API
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: api.handler
+      Environment:
+        Variables:
+          API_KEY: !Ref ApiKey
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-hold" }
+      Events:
+        CreateEvent:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: /events, Method: POST }
+        GetEvent:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: "/events/{id}", Method: GET }
+        AddAttendees:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: "/events/{id}/attendees", Method: POST }
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: [content-type, x-standby-key]
+        AllowMethods: [GET, POST]
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+  ReceiptRuleSetName:
+    Description: Activate once with `aws ses set-active-receipt-rule-set --rule-set-name <this>`
+    Value: !Ref ReceiptRuleSet
+  StateMachineArn:
+    Value: !Ref HoldStateMachine
+  TableName:
+    Value: !Ref Table
