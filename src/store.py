@@ -104,8 +104,9 @@ def seat_next(eid: str) -> dict | None:
                     {"Update": {
                         "TableName": TABLE,
                         "Key": {"pk": {"S": ek(eid)}, "sk": {"S": "META"}},
-                        "UpdateExpression": "SET seated = seated + :one",
-                        "ConditionExpression": "seated < capacity",
+                        "UpdateExpression": "SET #seated = #seated + :one",
+                        "ConditionExpression": "#seated < #cap",
+                        "ExpressionAttributeNames": {"#seated": "seated", "#cap": "capacity"},
                         "ExpressionAttributeValues": {":one": {"N": "1"}},
                     }},
                     {"Update": {
@@ -198,9 +199,9 @@ def release(hid: str, reason: str) -> dict | None:
             TransactItems=[
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
-                    "UpdateExpression": "SET #s = :r, sequence = sequence + :one, released_at = :t REMOVE task_token",
+                    "UpdateExpression": "SET #s = :r, #seq = #seq + :one, released_at = :t REMOVE task_token",
                     "ConditionExpression": "#s IN (:i, :c, :p)",
-                    "ExpressionAttributeNames": {"#s": "status"},
+                    "ExpressionAttributeNames": {"#s": "status", "#seq": "sequence"},
                     "ExpressionAttributeValues": {
                         ":r": {"S": reason}, ":i": {"S": "INVITED"}, ":c": {"S": "CONFIRMED"},
                         ":p": {"S": "PENDING"}, ":one": {"N": "1"}, ":t": {"N": str(now())},
@@ -215,8 +216,9 @@ def release(hid: str, reason: str) -> dict | None:
                 }},
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": ek(h["event_id"])}, "sk": {"S": "META"}},
-                    "UpdateExpression": "SET seated = seated - :one",
-                    "ConditionExpression": "seated > :zero",
+                    "UpdateExpression": "SET #seated = #seated - :one",
+                    "ConditionExpression": "#seated > :zero",
+                    "ExpressionAttributeNames": {"#seated": "seated"},
                     "ExpressionAttributeValues": {":one": {"N": "1"}, ":zero": {"N": "0"}},
                 }},
             ]
