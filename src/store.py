@@ -11,6 +11,7 @@ guarded by `seated < capacity`, so the event can never be over-booked.
 from __future__ import annotations
 
 import os
+import random
 import time
 import uuid
 
@@ -26,6 +27,35 @@ _client = boto3.client("dynamodb")
 
 def now() -> int:
     return int(time.time())
+
+
+class Conflict(Exception):
+    """Another transaction touched the same item; safe to retry."""
+
+
+def _reasons(e: ClientError) -> list[str]:
+    return [r.get("Code", "None") for r in e.response.get("CancellationReasons", [])]
+
+
+def _is_conflict(e: ClientError) -> bool:
+    code = e.response["Error"]["Code"]
+    if code in ("TransactionConflictException", "ProvisionedThroughputExceededException", "ThrottlingException"):
+        return True
+    return code == "TransactionCanceledException" and "TransactionConflict" in _reasons(e)
+
+
+def _retry(fn, attempts: int = 12):
+    """Run fn, retrying with jittered backoff while DynamoDB reports a write conflict."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except ClientError as e:
+            if not _is_conflict(e) or i == attempts - 1:
+                raise
+        except Conflict:
+            if i == attempts - 1:
+                raise
+        time.sleep(min(1.0, 0.02 * 2 ** i) * random.uniform(0.5, 1.5))
 
 
 def ek(eid: str) -> str:
@@ -66,13 +96,13 @@ def list_attendees(eid: str) -> list[dict]:
 
 
 def add_attendee(eid: str, email: str, name: str) -> dict:
-    res = _table.update_item(
+    res = _retry(lambda: _table.update_item(
         Key={"pk": ek(eid), "sk": "META"},
         UpdateExpression="ADD next_pos :one",
         ConditionExpression="attribute_exists(pk)",
         ExpressionAttributeValues={":one": 1},
         ReturnValues="UPDATED_NEW",
-    )
+    ))
     pos = int(res["Attributes"]["next_pos"])
     item = {
         "pk": ek(eid), "sk": f"ATT#{pos:06d}", "event_id": eid, "pos": pos,
@@ -92,8 +122,9 @@ def first_waiting(eid: str) -> dict | None:
 
 def seat_next(eid: str) -> dict | None:
     """Atomically move the first WAITING attendee into a new hold.
-    Returns the hold item, or None if no seat or nobody waiting."""
-    for _ in range(5):
+    Returns the hold item, or None if the event is full or nobody is waiting."""
+
+    def attempt():
         att = first_waiting(eid)
         if not att:
             return None
@@ -136,13 +167,14 @@ def seat_next(eid: str) -> dict | None:
             )
             return get_hold(hid)
         except ClientError as e:
-            if e.response["Error"]["Code"] != "TransactionCanceledException":
+            if e.response["Error"]["Code"] != "TransactionCanceledException" or _is_conflict(e):
                 raise
-            reasons = [r.get("Code") for r in e.response.get("CancellationReasons", [])]
+            reasons = _reasons(e)
             if reasons and reasons[0] == "ConditionalCheckFailed":
                 return None  # event is full
-            # someone else grabbed this attendee — try the next one
-    return None
+            raise Conflict()  # someone else seated this attendee first: look again
+
+    return _retry(attempt, attempts=25)
 
 
 def get_hold(hid: str) -> dict | None:
@@ -164,7 +196,7 @@ def confirm(hid: str) -> bool:
     if not h:
         return False
     try:
-        _client.transact_write_items(
+        _retry(lambda: _client.transact_write_items(
             TransactItems=[
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
@@ -181,21 +213,21 @@ def confirm(hid: str) -> bool:
                     "ExpressionAttributeValues": {":c": {"S": "CONFIRMED"}, ":t": {"N": str(now())}},
                 }},
             ]
-        )
+        ))
         return True
     except ClientError as e:
-        if e.response["Error"]["Code"] == "TransactionCanceledException":
-            return False
+        if e.response["Error"]["Code"] == "TransactionCanceledException" and not _is_conflict(e):
+            return False  # already confirmed or released
         raise
 
 
 def release(hid: str, reason: str) -> dict | None:
-    """Free the seat held by `hid`. reason: DECLINED | EXPIRED. Idempotent."""
+    """Free the seat held by `hid`. reason: DECLINED | EXPIRED | FAILED. Idempotent."""
     h = get_hold(hid)
-    if not h or h["status"] in ("DECLINED", "EXPIRED"):
+    if not h or h["status"] in ("DECLINED", "EXPIRED", "FAILED"):
         return None
     try:
-        _client.transact_write_items(
+        _retry(lambda: _client.transact_write_items(
             TransactItems=[
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
@@ -222,9 +254,9 @@ def release(hid: str, reason: str) -> dict | None:
                     "ExpressionAttributeValues": {":one": {"N": "1"}, ":zero": {"N": "0"}},
                 }},
             ]
-        )
+        ))
     except ClientError as e:
-        if e.response["Error"]["Code"] == "TransactionCanceledException":
-            return None
+        if e.response["Error"]["Code"] == "TransactionCanceledException" and not _is_conflict(e):
+            return None  # already released
         raise
     return get_hold(hid)

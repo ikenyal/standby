@@ -100,7 +100,7 @@ async function tick() {
       const was = prev[a.pos];
       if (was && was !== a.status) {
         const verb = { INVITED: "was offered a seat", CONFIRMED: "said yes — seat confirmed",
-                       DECLINED: "said no — seat passed on", EXPIRED: "didn't answer in time — seat passed on" }[a.status] || a.status;
+                       DECLINED: "said no — seat passed on", EXPIRED: "didn't answer in time — seat passed on", FAILED: "couldn't be reached — seat passed on" }[a.status] || a.status;
         log(`<b>${esc(a.name || a.email)}</b> ${verb}`);
       }
       prev[a.pos] = a.status;
@@ -131,7 +131,7 @@ function render() {
   $("seats").innerHTML = html;
   $("queue").innerHTML = d.attendees.filter((a) => a.status === "WAITING")
     .map((a, i) => `<li>${i + 1}. ${esc(a.name || a.email)}</li>`).join("") || "<li>nobody waiting</li>";
-  $("gone").innerHTML = d.attendees.filter((a) => a.status === "DECLINED" || a.status === "EXPIRED")
+  $("gone").innerHTML = d.attendees.filter((a) => a.status === "DECLINED" || a.status === "EXPIRED" || a.status === "FAILED")
     .map((a) => `<li title="${a.status}">${esc(a.name || a.email)}</li>`).join("");
 }
 </script>

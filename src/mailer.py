@@ -32,7 +32,18 @@ def _human(seconds: int) -> str:
     return f"{seconds // 86400} days"
 
 
+SIMULATED_DOMAINS = ("example.com", "example.org", "example.net")
+
+
+def is_simulated(addr: str) -> bool:
+    """Reserved example domains are simulated attendees: never emailed (used for load tests)."""
+    domain = addr.rsplit("@", 1)[-1].lower()
+    return any(domain == d or domain.endswith("." + d) for d in SIMULATED_DOMAINS)
+
+
 def _send(method: str, event: dict, hold: dict, subject: str, body: str) -> str:
+    if is_simulated(hold["email"]):
+        return "simulated"
     cal = build_calendar(
         method=method,
         uid=uid_for(hold["hold_id"]),

@@ -25,7 +25,8 @@ def release(event, _ctx):
     hold = store.release(hid, reason)
     if hold:
         ev = store.get_event(hold["event_id"])
-        mailer.send_cancel(ev, hold, reason)
+        if reason != "FAILED":  # the invite never arrived, so there is nothing to cancel
+            mailer.send_cancel(ev, hold, reason)
         promoted = workflow.fill(hold["event_id"])
     else:
         promoted = []

@@ -10,7 +10,7 @@ import store
 import workflow
 
 API_KEY = os.environ.get("API_KEY", "")
-PUBLIC_STATUSES = ("WAITING", "INVITED", "CONFIRMED", "DECLINED", "EXPIRED")
+PUBLIC_STATUSES = ("WAITING", "INVITED", "CONFIRMED", "DECLINED", "EXPIRED", "FAILED")
 
 
 def _resp(code: int, body) -> dict:

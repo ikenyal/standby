@@ -187,10 +187,18 @@ Resources:
                 token.$: $$.Task.Token
             TimeoutSecondsPath: $.hold_seconds
             ResultPath: $.reply
+            Retry:
+              - ErrorEquals: [Lambda.TooManyRequestsException, Lambda.ServiceException]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
             Catch:
               - ErrorEquals: [States.Timeout]
                 ResultPath: $.error
                 Next: ExpireAndPassOn
+              - ErrorEquals: [States.ALL]
+                ResultPath: $.error
+                Next: InviteFailedPassOn
             Next: WhatDidTheySay
           WhatDidTheySay:
             Type: Choice
@@ -207,8 +215,10 @@ Resources:
               Payload:
                 hold_id.$: $.hold_id
             Retry:
-              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
-                MaxAttempts: 3
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException, Lambda.Unknown, States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
             End: true
           DeclineAndPassOn:
             Type: Task
@@ -219,8 +229,25 @@ Resources:
                 hold_id.$: $.hold_id
                 reason: DECLINED
             Retry:
-              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
-                MaxAttempts: 3
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException, Lambda.Unknown, States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
+            End: true
+          InviteFailedPassOn:
+            Type: Task
+            Comment: The invite could not be sent; free the seat for the next person
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ReleaseArn}
+              Payload:
+                hold_id.$: $.hold_id
+                reason: FAILED
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException, Lambda.Unknown, States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
             End: true
           ExpireAndPassOn:
             Type: Task
@@ -231,8 +258,10 @@ Resources:
                 hold_id.$: $.hold_id
                 reason: EXPIRED
             Retry:
-              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException]
-                MaxAttempts: 3
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException, Lambda.Unknown, States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
             End: true
 
   # ---------------------------------------------------------------- organizer API
