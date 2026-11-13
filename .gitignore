@@ -1,0 +1,15 @@
+# build / deps
+.aws-sam/
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+# local config that may contain real addresses or domains — never commit
+samconfig.toml
+.env
+.env.*
+config.local.*
+# raw mail samples (contain real addresses)
+*.eml
+samples/private/
+.DS_Store
