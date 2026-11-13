@@ -66,7 +66,13 @@ def hk(hid: str) -> str:
     return f"HOLD#{hid}"
 
 
-def create_event(*, title, starts_at, ends_at, capacity, hold_seconds, location="", description=""):
+def _ts(iso: str) -> int:
+    from datetime import datetime
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+
+
+def create_event(*, title, starts_at, ends_at, capacity, hold_seconds, reconfirm_at, reconfirm_by,
+                 roster_deadline, location="", description=""):
     eid = uuid.uuid4().hex[:10]
     _table.put_item(
         Item={
@@ -74,7 +80,11 @@ def create_event(*, title, starts_at, ends_at, capacity, hold_seconds, location=
             "starts_at": starts_at, "ends_at": ends_at, "location": location,
             "description": description, "capacity": int(capacity),
             "hold_seconds": int(hold_seconds), "seated": 0, "next_pos": 0,
-            "created_at": now(),
+            # The venue needs the final list by roster_deadline. Confirmed people are asked again at
+            # reconfirm_at and must answer by reconfirm_by, which leaves time to offer freed seats.
+            "reconfirm_at": reconfirm_at, "reconfirm_by": reconfirm_by, "roster_deadline": roster_deadline,
+            "reconfirm_by_ts": _ts(reconfirm_by), "roster_deadline_ts": _ts(roster_deadline),
+            "roster_locked": False, "created_at": now(),
         },
         ConditionExpression="attribute_not_exists(pk)",
     )
@@ -191,6 +201,48 @@ def set_hold_token(hid: str, token: str) -> None:
     )
 
 
+def begin_reconfirm(hid: str, token: str) -> dict | None:
+    """CONFIRMED -> RECONFIRMING: ask a confirmed attendee again (new invite sequence)."""
+    h = get_hold(hid)
+    if not h:
+        return None
+    try:
+        _retry(lambda: _client.transact_write_items(
+            TransactItems=[
+                {"Update": {
+                    "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
+                    "UpdateExpression": "SET #s = :r, task_token = :t, #seq = #seq + :one, asked_again_at = :n",
+                    "ConditionExpression": "#s = :c",
+                    "ExpressionAttributeNames": {"#s": "status", "#seq": "sequence"},
+                    "ExpressionAttributeValues": {
+                        ":r": {"S": "RECONFIRMING"}, ":c": {"S": "CONFIRMED"}, ":t": {"S": token},
+                        ":one": {"N": "1"}, ":n": {"N": str(now())},
+                    },
+                }},
+                {"Update": {
+                    "TableName": TABLE,
+                    "Key": {"pk": {"S": ek(h["event_id"])}, "sk": {"S": h["att_sk"]}},
+                    "UpdateExpression": "SET #s = :r, asked_again_at = :n",
+                    "ExpressionAttributeNames": {"#s": "status"},
+                    "ExpressionAttributeValues": {":r": {"S": "RECONFIRMING"}, ":n": {"N": str(now())}},
+                }},
+            ]
+        ))
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "TransactionCanceledException" and not _is_conflict(e):
+            return None  # no longer confirmed
+        raise
+    return get_hold(hid)
+
+
+def lock_roster(eid: str) -> None:
+    _retry(lambda: _table.update_item(
+        Key={"pk": ek(eid), "sk": "META"},
+        UpdateExpression="SET roster_locked = :t, locked_at = :n",
+        ExpressionAttributeValues={":t": True, ":n": now()},
+    ))
+
+
 def confirm(hid: str) -> bool:
     h = get_hold(hid)
     if not h:
@@ -201,9 +253,11 @@ def confirm(hid: str) -> bool:
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
                     "UpdateExpression": "SET #s = :c REMOVE task_token",
-                    "ConditionExpression": "#s = :i",
+                    "ConditionExpression": "#s IN (:i, :r)",
                     "ExpressionAttributeNames": {"#s": "status"},
-                    "ExpressionAttributeValues": {":c": {"S": "CONFIRMED"}, ":i": {"S": "INVITED"}},
+                    "ExpressionAttributeValues": {
+                        ":c": {"S": "CONFIRMED"}, ":i": {"S": "INVITED"}, ":r": {"S": "RECONFIRMING"},
+                    },
                 }},
                 {"Update": {
                     "TableName": TABLE,
@@ -232,11 +286,12 @@ def release(hid: str, reason: str) -> dict | None:
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
                     "UpdateExpression": "SET #s = :r, #seq = #seq + :one, released_at = :t REMOVE task_token",
-                    "ConditionExpression": "#s IN (:i, :c, :p)",
+                    "ConditionExpression": "#s IN (:i, :c, :p, :rc)",
                     "ExpressionAttributeNames": {"#s": "status", "#seq": "sequence"},
                     "ExpressionAttributeValues": {
                         ":r": {"S": reason}, ":i": {"S": "INVITED"}, ":c": {"S": "CONFIRMED"},
-                        ":p": {"S": "PENDING"}, ":one": {"N": "1"}, ":t": {"N": str(now())},
+                        ":p": {"S": "PENDING"}, ":rc": {"S": "RECONFIRMING"},
+                        ":one": {"N": "1"}, ":t": {"N": str(now())},
                     },
                 }},
                 {"Update": {

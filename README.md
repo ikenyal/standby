@@ -13,6 +13,13 @@ lets their calendar's own **Yes / No** buttons decide what happens next:
 Attendees never open a website, never log in, never click a link. Seats move from one calendar
 to the next on their own. Everything is serverless and costs close to nothing while idle.
 
+**Seats only move while it still helps.** Nobody rearranges their evening for a seat offered an
+hour before the start, and venues often need the visitor list or printed badges a day or two
+ahead. So every event has a **roster deadline** (default: two days before). Before it, Standby
+asks the people who said Yes once more ("Still coming?"), frees the seats of anyone who doesn't
+answer while the waitlist still has time to plan, and then locks the list for the venue. After
+the deadline, seats stop moving.
+
 ## How it works
 
 ```mermaid
@@ -66,6 +73,19 @@ From [`results/README.md`](results/README.md):
   1 s after the reply reached SES; No released it and invited the next person about 2 s later;
   silence expired the hold on time and removed the event from the calendar.
 
+### One event's timeline
+
+```mermaid
+flowchart LR
+  A[Sign-ups<br/>seats offered in order] --> B[Ask again<br/>default 4 days before]
+  B --> C[Answers due<br/>3 days before<br/>silence frees the seat]
+  C --> D[Freed seats offered<br/>holds end by the deadline]
+  D --> E[Roster locks<br/>2 days before<br/>GET /roster for the venue]
+```
+
+A second, per-event Step Functions execution waits until each of those times (`Wait` with a
+timestamp, no scheduler), asks the confirmed attendees again, and locks the roster.
+
 ## Deploy it
 
 You need: an AWS account, the AWS SAM CLI, and a domain (a subdomain is enough) whose DNS you can edit.
@@ -99,6 +119,7 @@ There is no pipeline: `sam deploy` from your machine is the whole release proces
 export STANDBY_API=<ApiUrl output> STANDBY_API_KEY=<your key>
 
 # an event with 2 seats and a 10-minute answer window
+# (optional: reconfirm_at, reconfirm_by, roster_deadline; defaults are 4, 3 and 2 days before the start)
 curl -s -X POST $STANDBY_API/events -H "x-standby-key: $STANDBY_API_KEY" \
   -d '{"title":"Serverless Night","starts_at":"2026-11-20T19:00:00+09:00",
        "ends_at":"2026-11-20T20:30:00+09:00","capacity":2,"hold_seconds":600}'
@@ -109,6 +130,9 @@ curl -s -X POST $STANDBY_API/events/<event_id>/attendees -H "x-standby-key: $STA
 
 # watch the seats move
 scripts/board.sh <event_id>
+
+# the final list for the venue, once locked
+curl -s $STANDBY_API/events/<event_id>/roster -H "x-standby-key: $STANDBY_API_KEY"
 ```
 
 Addresses on the reserved `example.com/.org/.net` domains are **simulated attendees**: they take
@@ -122,6 +146,8 @@ TABLE_NAME=<table> python3 scripts/compare_seating.py   # naive vs conditional s
 
 ## Limits, honestly
 
+- Changes after the roster deadline are the venue's problem, not Standby's: a seat freed then
+  stays empty.
 - Tested with Google Calendar only. Other clients use the same standard (iMIP, RFC 6047) but
   have not been tried here.
 - The organizer API uses one shared key. Fine for one organizer; a real product would want users.

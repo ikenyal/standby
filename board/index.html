@@ -26,6 +26,10 @@
           transition:border-color .4s, transform .4s; }
   .seat.invited { border-left:5px solid var(--invited); }
   .seat.confirmed { border-left:5px solid var(--confirmed); }
+  .seat.reconfirming { border-left:5px solid var(--invited); }
+  .reconfirming .state { color:var(--invited); }
+  .banner { margin-top:14px; padding:8px 12px; border:1px solid var(--line); border-radius:4px; font-size:13px; color:var(--muted); }
+  .banner.locked { color:var(--ink); border-color:var(--accent); }
   .seat.empty { border-style:dashed; color:var(--muted); display:flex; align-items:center; justify-content:center; }
   .seat.flash { transform:scale(1.03); }
   .name { font-weight:600; }
@@ -54,6 +58,7 @@
     <h1 id="title">Standby</h1>
     <div class="meta" id="meta">waiting for data…</div>
   </header>
+  <div class="banner" id="banner"></div>
   <h2>Seats</h2>
   <div class="seats" id="seats"></div>
   <h2>Waitlist</h2>
@@ -101,7 +106,7 @@ async function tick() {
     for (const a of last.attendees) {
       const was = prev[a.pos];
       if (was && was !== a.status) {
-        const verb = { INVITED: "was offered a seat", CONFIRMED: "said yes — seat confirmed",
+        const verb = { RECONFIRMING: "was asked again: still coming?", INVITED: "was offered a seat", CONFIRMED: "said yes — seat confirmed",
                        DECLINED: "said no — seat passed on", EXPIRED: "didn't answer in time — seat passed on", FAILED: "couldn't be reached — seat passed on" }[a.status] || a.status;
         log(`<b>${esc(a.name || a.email)}</b> ${verb}`);
       }
@@ -117,14 +122,28 @@ function render() {
   $("title").textContent = d.title;
   document.title = `${d.title} — Standby`;
   $("meta").textContent = `${d.seated}/${d.capacity} seats held · hold window ${d.hold_seconds}s · ${new Date(d.starts_at).toLocaleString()}`;
-  const seated = d.attendees.filter((a) => a.status === "INVITED" || a.status === "CONFIRMED");
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
+  const deadline = d.roster_deadline ? Date.parse(d.roster_deadline) / 1000 : null;
+  const askBy = d.reconfirm_by ? Date.parse(d.reconfirm_by) / 1000 : null;
+  $("banner").className = "banner" + (d.roster_locked ? " locked" : "");
+  $("banner").textContent = d.roster_locked
+    ? `Roster locked for the venue. Seats no longer move.`
+    : `Ask again ${fmt(d.reconfirm_at)} · answers by ${fmt(d.reconfirm_by)} · roster locks ${fmt(d.roster_deadline)}`;
+  const seated = d.attendees.filter((a) => ["INVITED", "CONFIRMED", "RECONFIRMING"].includes(a.status));
   let html = seated.map((a) => {
     const cls = a.status.toLowerCase();
     let state = "Confirmed", bar = "";
+    const clock = (s) => s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    if (a.status === "RECONFIRMING" && askBy) {
+      const total = Math.max(1, askBy - a.asked_again_at), left = Math.max(0, Math.round(askBy - now));
+      state = `Asked again · ${clock(left)} to answer`;
+      bar = `<div class="bar"><i style="width:${Math.min(100, (left / total) * 100)}%"></i></div>`;
+    }
     if (a.status === "INVITED") {
-      const left = Math.max(0, Math.round(a.invited_at + d.hold_seconds - now));
-      const pct = Math.min(100, (left / d.hold_seconds) * 100);
-      state = `Waiting for RSVP · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
+      const end = Math.min(a.invited_at + d.hold_seconds, deadline || Infinity);
+      const total = Math.max(1, end - a.invited_at), left = Math.max(0, Math.round(end - now));
+      const pct = Math.min(100, (left / total) * 100);
+      state = `Waiting for RSVP · ${clock(left)} left`;
       bar = `<div class="bar"><i style="width:${pct}%"></i></div>`;
     }
     return `<div class="seat ${cls}"><div class="name">${esc(a.name || "Guest")}</div><div class="who">${esc(a.email)}</div><div class="state">${state}</div>${bar}</div>`;

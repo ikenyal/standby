@@ -32,6 +32,7 @@ Globals:
         ORGANIZER_NAME: !Ref OrganizerName
         MAIL_DOMAIN: !Ref MailDomain
         STATE_MACHINE_ARN: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-hold
+        LIFECYCLE_ARN: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-event
 
 Resources:
   Table:
@@ -184,6 +185,7 @@ Resources:
               FunctionName: ${InviteArn}
               Payload:
                 hold_id.$: $.hold_id
+                mode.$: $.mode
                 token.$: $$.Task.Token
             TimeoutSecondsPath: $.hold_seconds
             ResultPath: $.reply
@@ -264,6 +266,85 @@ Resources:
                 MaxAttempts: 6
             End: true
 
+  ReconfirmAllFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: steps.reconfirm_all
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-hold" }
+
+  LockRosterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: steps.lock_roster
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+
+  EventStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ${AWS::StackName}-event
+      Type: STANDARD
+      Policies:
+        - LambdaInvokePolicy: { FunctionName: !Ref ReconfirmAllFunction }
+        - LambdaInvokePolicy: { FunctionName: !Ref LockRosterFunction }
+        - DynamoDBReadPolicy: { TableName: !Ref Table }
+      DefinitionSubstitutions:
+        ReconfirmAllArn: !GetAtt ReconfirmAllFunction.Arn
+        LockRosterArn: !GetAtt LockRosterFunction.Arn
+        TableName: !Ref Table
+      Definition:
+        Comment: One execution per event. Ask confirmed people again, then lock the roster for the venue.
+        StartAt: LoadTimes
+        States:
+          LoadTimes:
+            Type: Task
+            Resource: arn:aws:states:::dynamodb:getItem
+            Parameters:
+              TableName: ${TableName}
+              Key:
+                pk: { "S.$": "States.Format('EVENT#{}', $.event_id)" }
+                sk: { S: META }
+            ResultSelector:
+              reconfirm_at.$: $.Item.reconfirm_at.S
+              roster_deadline.$: $.Item.roster_deadline.S
+            ResultPath: $.times
+            Next: WaitToAskAgain
+          WaitToAskAgain:
+            Type: Wait
+            TimestampPath: $.times.reconfirm_at
+            Next: AskConfirmedPeopleAgain
+          AskConfirmedPeopleAgain:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${ReconfirmAllArn}
+              Payload: { event_id.$: $.event_id }
+            ResultPath: $.asked
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException, Lambda.Unknown, States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
+            Next: WaitForRosterDeadline
+          WaitForRosterDeadline:
+            Type: Wait
+            TimestampPath: $.times.roster_deadline
+            Next: LockRoster
+          LockRoster:
+            Type: Task
+            Resource: arn:aws:states:::lambda:invoke
+            Parameters:
+              FunctionName: ${LockRosterArn}
+              Payload: { event_id.$: $.event_id }
+            Retry:
+              - ErrorEquals: [Lambda.ServiceException, Lambda.TooManyRequestsException, Lambda.Unknown, States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
+            End: true
+
   # ---------------------------------------------------------------- organizer API
   ApiFunction:
     Type: AWS::Serverless::Function
@@ -275,6 +356,7 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy: { TableName: !Ref Table }
         - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-hold" }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-event" }
       Events:
         CreateEvent:
           Type: HttpApi
@@ -282,6 +364,9 @@ Resources:
         GetEvent:
           Type: HttpApi
           Properties: { ApiId: !Ref Api, Path: "/events/{id}", Method: GET }
+        GetRoster:
+          Type: HttpApi
+          Properties: { ApiId: !Ref Api, Path: "/events/{id}/roster", Method: GET }
         AddAttendees:
           Type: HttpApi
           Properties: { ApiId: !Ref Api, Path: "/events/{id}/attendees", Method: POST }

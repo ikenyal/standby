@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 
 import boto3
@@ -70,8 +71,24 @@ def _send(method: str, event: dict, hold: dict, subject: str, body: str) -> str:
     return res["MessageId"]
 
 
+def _when(event: dict, iso: str) -> str:
+    tz = datetime.fromisoformat(event["starts_at"]).tzinfo
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(tz).strftime("%a %d %b, %H:%M")
+
+
+def send_reconfirm(event: dict, hold: dict) -> str:
+    body = (
+        f"Still coming to \"{event['title']}\"? The final list goes to the venue on "
+        f"{_when(event, event['roster_deadline'])}.\n\n"
+        f"Answer Yes or No again from your calendar by {_when(event, event['reconfirm_by'])}. "
+        "If we don't hear back, your seat goes to the next person while they still have time to plan."
+    )
+    return _send("REQUEST", event, hold, f"Still coming? {event['title']}", body)
+
+
 def send_invite(event: dict, hold: dict) -> str:
-    window = _human(int(event["hold_seconds"]))
+    limit = int(event.get("roster_deadline_ts", time.time() + int(event["hold_seconds"]))) - int(time.time())
+    window = _human(max(1, min(int(event["hold_seconds"]), limit)))
     body = (
         f"A seat at \"{event['title']}\" is yours if you want it.\n\n"
         f"Answer Yes or No from your calendar within {window}. "
@@ -81,6 +98,8 @@ def send_invite(event: dict, hold: dict) -> str:
 
 
 def send_cancel(event: dict, hold: dict, reason: str) -> str:
-    why = "You declined" if reason == "DECLINED" else "The hold expired"
-    body = f"{why}, so this seat has been passed to the next person. Thanks for letting it go."
+    if reason == "DECLINED":
+        body = "You declined, so this seat has been released. Thanks for letting us know."
+    else:
+        body = "We didn't hear back in time, so this seat has been released."
     return _send("CANCEL", event, hold, f"Seat released: {event['title']}", body)

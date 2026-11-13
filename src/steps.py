@@ -1,18 +1,23 @@
-"""Lambda tasks used by the hold state machine."""
+"""Lambda tasks used by the state machines."""
 from __future__ import annotations
 
-import mailer
 import store
+import mailer
 import workflow
 
 
 def invite(event, _ctx):
-    # Invoked with .waitForTaskToken: {"hold_id": ..., "token": ...}
-    hid, token = event["hold_id"], event["token"]
-    store.set_hold_token(hid, token)
-    hold = store.get_hold(hid)
-    ev = store.get_event(hold["event_id"])
-    mailer.send_invite(ev, hold)
+    # Invoked with .waitForTaskToken: {"hold_id", "token", "mode": "offer" | "reconfirm"}
+    hid, token, mode = event["hold_id"], event["token"], event.get("mode", "offer")
+    if mode == "reconfirm":
+        hold = store.begin_reconfirm(hid, token)
+        if not hold:
+            raise RuntimeError("hold is no longer confirmed")
+        mailer.send_reconfirm(store.get_event(hold["event_id"]), hold)
+    else:
+        store.set_hold_token(hid, token)
+        hold = store.get_hold(hid)
+        mailer.send_invite(store.get_event(hold["event_id"]), hold)
     return {"sent": True}
 
 
@@ -31,3 +36,12 @@ def release(event, _ctx):
     else:
         promoted = []
     return {"released": bool(hold), "promoted": promoted}
+
+
+def reconfirm_all(event, _ctx):
+    return {"asked_again": len(workflow.start_reconfirm(event["event_id"]))}
+
+
+def lock_roster(event, _ctx):
+    store.lock_roster(event["event_id"])
+    return {"locked": True}

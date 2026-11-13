@@ -46,7 +46,7 @@ def handle_raw(raw: bytes) -> str:
     if reply.attendee != hold["email"]:
         return "ignored: attendee mismatch"
     status, ps = hold["status"], reply.partstat
-    if status == "INVITED" and ps in ("ACCEPTED", "DECLINED") and hold.get("task_token"):
+    if status in ("INVITED", "RECONFIRMING") and ps in ("ACCEPTED", "DECLINED") and hold.get("task_token"):
         try:
             _sfn.send_task_success(taskToken=hold["task_token"], output=json.dumps({"partstat": ps}))
         except (_sfn.exceptions.TaskTimedOut, _sfn.exceptions.TaskDoesNotExist, _sfn.exceptions.InvalidToken):

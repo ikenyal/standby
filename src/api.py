@@ -4,13 +4,13 @@ from __future__ import annotations
 import hmac
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import store
 import workflow
 
 API_KEY = os.environ.get("API_KEY", "")
-PUBLIC_STATUSES = ("WAITING", "INVITED", "CONFIRMED", "DECLINED", "EXPIRED", "FAILED")
+PUBLIC_STATUSES = ("WAITING", "INVITED", "CONFIRMED", "RECONFIRMING", "DECLINED", "EXPIRED", "FAILED")
 
 
 def _resp(code: int, body) -> dict:
@@ -39,6 +39,10 @@ def _snapshot(eid: str) -> dict | None:
         "capacity": int(ev["capacity"]),
         "seated": int(ev["seated"]),
         "hold_seconds": int(ev["hold_seconds"]),
+        "reconfirm_at": ev.get("reconfirm_at"),
+        "reconfirm_by": ev.get("reconfirm_by"),
+        "roster_deadline": ev.get("roster_deadline"),
+        "roster_locked": bool(ev.get("roster_locked")),
         "attendees": [
             {
                 "pos": int(a["pos"]),
@@ -46,6 +50,7 @@ def _snapshot(eid: str) -> dict | None:
                 "email": _mask(a["email"]),
                 "status": a["status"],
                 "invited_at": int(a["invited_at"]) if a.get("invited_at") else None,
+                "asked_again_at": int(a["asked_again_at"]) if a.get("asked_again_at") else None,
             }
             for a in atts
         ],
@@ -67,23 +72,45 @@ def handler(event, _ctx):
 
     if route == "POST /events":
         try:
-            datetime.fromisoformat(body["starts_at"]); datetime.fromisoformat(body["ends_at"])
-            capacity, hold = int(body["capacity"]), int(body.get("hold_seconds", 60))
-        except (KeyError, ValueError):
+            start = datetime.fromisoformat(body["starts_at"]); datetime.fromisoformat(body["ends_at"])
+            capacity, hold = int(body["capacity"]), int(body.get("hold_seconds", 86400))
+            # Defaults follow how venues work: badges / visitor lists are due ~2 days ahead.
+            deadline = datetime.fromisoformat(body.get("roster_deadline") or (start - timedelta(days=2)).isoformat())
+            ask_by = datetime.fromisoformat(body.get("reconfirm_by") or (deadline - timedelta(days=1)).isoformat())
+            ask_at = datetime.fromisoformat(body.get("reconfirm_at") or (ask_by - timedelta(days=1)).isoformat())
+        except (KeyError, ValueError, TypeError):
             return _resp(400, {"error": "title, starts_at, ends_at (ISO 8601 with offset), capacity required"})
+        if start.tzinfo is None or deadline.tzinfo is None:
+            return _resp(400, {"error": "times need a UTC offset"})
         if capacity < 1 or hold < 30:
             return _resp(400, {"error": "capacity >= 1 and hold_seconds >= 30"})
+        if not (ask_at < ask_by < deadline <= start):
+            return _resp(400, {"error": "need reconfirm_at < reconfirm_by < roster_deadline <= starts_at"})
+        z = lambda d: d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # Step Functions Wait wants RFC 3339
+        ask_at, ask_by, deadline = z(ask_at), z(ask_by), z(deadline)
         eid = store.create_event(
             title=body.get("title", "Untitled meetup"), starts_at=body["starts_at"],
             ends_at=body["ends_at"], capacity=capacity, hold_seconds=hold,
-            location=body.get("location", ""),
+            reconfirm_at=ask_at, reconfirm_by=ask_by,
+            roster_deadline=deadline, location=body.get("location", ""),
         )
-        return _resp(201, {"event_id": eid})
+        workflow.start_lifecycle(eid)
+        return _resp(201, {"event_id": eid, "reconfirm_at": ask_at,
+                           "reconfirm_by": ask_by, "roster_deadline": deadline})
 
     eid = params.get("id", "")
     if route == "GET /events/{id}":
         snap = _snapshot(eid)
         return _resp(200, snap) if snap else _resp(404, {"error": "not found"})
+
+    if route == "GET /events/{id}/roster":
+        ev = store.get_event(eid)
+        if not ev:
+            return _resp(404, {"error": "not found"})
+        people = [{"name": a.get("name") or "", "email": a["email"]}
+                  for a in store.list_attendees(eid) if a["status"] in ("CONFIRMED", "RECONFIRMING")]
+        return _resp(200, {"event_id": eid, "title": ev["title"], "locked": bool(ev.get("roster_locked")),
+                           "roster_deadline": ev.get("roster_deadline"), "attendees": people})
 
     if route == "POST /events/{id}/attendees":
         if not store.get_event(eid):
