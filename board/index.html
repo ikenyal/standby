@@ -12,6 +12,7 @@
             --invited:#f0b45a; --confirmed:#5fbf85; --gone:#4a463f; --accent:#f1ede4; }
   }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--ink);
          font:15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
   main { max-width:960px; margin:0 auto; padding:32px 20px 60px; }
@@ -35,7 +36,8 @@
   .bar i { display:block; height:100%; background:var(--invited); transition:width 1s linear; }
   ol.queue, ul.gone { list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:8px; }
   ol.queue li, ul.gone li { border:1px solid var(--line); border-radius:999px; padding:4px 12px; font-size:13px; }
-  ul.gone li { color:var(--gone); text-decoration:line-through; }
+  ul.gone li { color:var(--muted); }
+  ul.gone li s { color:var(--gone); }
   .log { font:12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--muted);
          border-top:1px solid var(--line); padding-top:8px; max-height:220px; overflow:auto; }
   .log b { color:var(--ink); font-weight:600; }
@@ -132,7 +134,7 @@ function render() {
   $("queue").innerHTML = d.attendees.filter((a) => a.status === "WAITING")
     .map((a, i) => `<li>${i + 1}. ${esc(a.name || a.email)}</li>`).join("") || "<li>nobody waiting</li>";
   $("gone").innerHTML = d.attendees.filter((a) => a.status === "DECLINED" || a.status === "EXPIRED" || a.status === "FAILED")
-    .map((a) => `<li title="${a.status}">${esc(a.name || a.email)}</li>`).join("");
+    .map((a) => `<li title="${a.status}"><s>${esc(a.name || a.email)}</s> · ${{ DECLINED: "said no", EXPIRED: "no answer", FAILED: "unreachable" }[a.status]}</li>`).join("");
 }
 </script>
 </body>
