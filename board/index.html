@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standby — seat board</title>
+<style>
+  :root { --bg:#f6f4ef; --ink:#1d1b18; --muted:#7a746a; --line:#ddd6c9; --seat:#ffffff;
+          --invited:#e8a33d; --confirmed:#2f7d4f; --gone:#b9b2a5; --accent:#1d1b18; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141311; --ink:#f1ede4; --muted:#9a9488; --line:#2e2b26; --seat:#1d1b18;
+            --invited:#f0b45a; --confirmed:#5fbf85; --gone:#4a463f; --accent:#f1ede4; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:32px 20px 60px; }
+  header { display:flex; justify-content:space-between; align-items:baseline; gap:16px; flex-wrap:wrap;
+           border-bottom:2px solid var(--accent); padding-bottom:12px; }
+  h1 { font-size:26px; margin:0; letter-spacing:-0.01em; }
+  .meta { color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:28px 0 10px; }
+  .seats { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:10px; }
+  .seat { background:var(--seat); border:1px solid var(--line); border-radius:6px; padding:12px 14px; min-height:84px;
+          transition:border-color .4s, transform .4s; }
+  .seat.invited { border-left:5px solid var(--invited); }
+  .seat.confirmed { border-left:5px solid var(--confirmed); }
+  .seat.empty { border-style:dashed; color:var(--muted); display:flex; align-items:center; justify-content:center; }
+  .seat.flash { transform:scale(1.03); }
+  .name { font-weight:600; }
+  .who { color:var(--muted); font-size:12px; }
+  .state { font-size:12px; margin-top:6px; font-variant-numeric:tabular-nums; }
+  .invited .state { color:var(--invited); } .confirmed .state { color:var(--confirmed); }
+  .bar { height:3px; background:var(--line); border-radius:2px; margin-top:6px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--invited); transition:width 1s linear; }
+  ol.queue, ul.gone { list-style:none; padding:0; margin:0; display:flex; flex-wrap:wrap; gap:8px; }
+  ol.queue li, ul.gone li { border:1px solid var(--line); border-radius:999px; padding:4px 12px; font-size:13px; }
+  ul.gone li { color:var(--gone); text-decoration:line-through; }
+  .log { font:12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--muted);
+         border-top:1px solid var(--line); padding-top:8px; max-height:220px; overflow:auto; }
+  .log b { color:var(--ink); font-weight:600; }
+  .err { color:#c0392b; }
+  form { display:flex; gap:8px; flex-wrap:wrap; margin-top:40px; }
+  input { font:inherit; padding:8px 10px; border:1px solid var(--line); background:var(--seat); color:var(--ink);
+          border-radius:4px; min-width:220px; }
+  button { font:inherit; padding:8px 14px; border:0; background:var(--accent); color:var(--bg); border-radius:4px; cursor:pointer; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Standby</h1>
+    <div class="meta" id="meta">waiting for data…</div>
+  </header>
+  <h2>Seats</h2>
+  <div class="seats" id="seats"></div>
+  <h2>Waitlist</h2>
+  <ol class="queue" id="queue"></ol>
+  <h2>Passed on</h2>
+  <ul class="gone" id="gone"></ul>
+  <h2>Activity</h2>
+  <div class="log" id="log"></div>
+  <form id="cfg" hidden>
+    <input id="api" placeholder="API URL" required>
+    <input id="eid" placeholder="Event ID" required>
+    <input id="key" placeholder="API key" type="password" required>
+    <button>Open board</button>
+  </form>
+</main>
+<script>
+// Config comes from the URL hash (#api=...&event=...&key=...) so nothing secret is stored in the page.
+const params = new URLSearchParams(location.hash.slice(1));
+const cfg = { api: params.get("api"), event: params.get("event"), key: params.get("key") };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let prev = {}, last = null;
+
+if (!cfg.api || !cfg.event || !cfg.key) {
+  $("cfg").hidden = false;
+  $("cfg").addEventListener("submit", (e) => {
+    e.preventDefault();
+    location.hash = new URLSearchParams({ api: $("api").value.replace(/\/$/, ""), event: $("eid").value, key: $("key").value });
+    location.reload();
+  });
+} else {
+  tick(); setInterval(tick, 2000); setInterval(render, 1000);
+}
+
+function log(html) {
+  const t = new Date().toLocaleTimeString([], { hour12: false });
+  $("log").insertAdjacentHTML("afterbegin", `<div>${t}  ${html}</div>`);
+}
+
+async function tick() {
+  try {
+    const r = await fetch(`${cfg.api}/events/${encodeURIComponent(cfg.event)}`, { headers: { "x-standby-key": cfg.key } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    last = await r.json(); last._fetched = Date.now() / 1000;
+    for (const a of last.attendees) {
+      const was = prev[a.pos];
+      if (was && was !== a.status) {
+        const verb = { INVITED: "was offered a seat", CONFIRMED: "said yes — seat confirmed",
+                       DECLINED: "said no — seat passed on", EXPIRED: "didn't answer in time — seat passed on" }[a.status] || a.status;
+        log(`<b>${esc(a.name || a.email)}</b> ${verb}`);
+      }
+      prev[a.pos] = a.status;
+    }
+    render();
+  } catch (e) { $("meta").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+function render() {
+  if (!last) return;
+  const d = last, now = d.server_time + (Date.now() / 1000 - d._fetched);
+  $("title").textContent = d.title;
+  document.title = `${d.title} — Standby`;
+  $("meta").textContent = `${d.seated}/${d.capacity} seats held · hold window ${d.hold_seconds}s · ${new Date(d.starts_at).toLocaleString()}`;
+  const seated = d.attendees.filter((a) => a.status === "INVITED" || a.status === "CONFIRMED");
+  let html = seated.map((a) => {
+    const cls = a.status.toLowerCase();
+    let state = "Confirmed", bar = "";
+    if (a.status === "INVITED") {
+      const left = Math.max(0, Math.round(a.invited_at + d.hold_seconds - now));
+      const pct = Math.min(100, (left / d.hold_seconds) * 100);
+      state = `Waiting for RSVP · ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")} left`;
+      bar = `<div class="bar"><i style="width:${pct}%"></i></div>`;
+    }
+    return `<div class="seat ${cls}"><div class="name">${esc(a.name || "Guest")}</div><div class="who">${esc(a.email)}</div><div class="state">${state}</div>${bar}</div>`;
+  }).join("");
+  for (let i = seated.length; i < d.capacity; i++) html += `<div class="seat empty">open seat</div>`;
+  $("seats").innerHTML = html;
+  $("queue").innerHTML = d.attendees.filter((a) => a.status === "WAITING")
+    .map((a, i) => `<li>${i + 1}. ${esc(a.name || a.email)}</li>`).join("") || "<li>nobody waiting</li>";
+  $("gone").innerHTML = d.attendees.filter((a) => a.status === "DECLINED" || a.status === "EXPIRED")
+    .map((a) => `<li title="${a.status}">${esc(a.name || a.email)}</li>`).join("");
+}
+</script>
+</body>
+</html>
