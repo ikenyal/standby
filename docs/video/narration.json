@@ -1,0 +1,10 @@
+[
+  "I run community meetups. When someone cancels the day before, the seat goes back to the waitlist, and nobody comes. Nobody rearranges their evening for a seat offered a few hours before it starts.",
+  "Venues make it worse. Many need the visitor list, or printed badges, two days ahead. My first version moved a seat to the next person in three seconds. It worked, and it solved the wrong problem. The problem isn't that people cancel. It's that we find out too late.",
+  "This is Standby, the waitlist that lives in your calendar. Every seat is a calendar invite, and attendees never open a website.",
+  "Here are two real calendars and one seat. The first person taps No. The event leaves their calendar, and seconds later it lands in the next person's. No app, no link, no login.",
+  "Days before the event, everyone who said Yes is asked again, and Google Calendar puts the question back. Silence frees the seat while the waitlist still has time to plan. At the roster deadline, seats stop moving and the final list is ready for the venue.",
+  "Under the hood, it is all serverless. Each seat hold is a Step Functions execution, waiting on a task token. SES sends the invite, and receives the calendar's reply on a subdomain. A Lambda reads the reply and resumes exactly one hold. DynamoDB only gives out a seat inside a transaction that checks one is free. One sam deploy, and no pipeline.",
+  "I measured why that check matters. Check-then-act miscounted in seven of ten trials, in both directions. Standby gave exactly thirty seats every time. Reading the execution history, I also found two people who lost a seat only because Lambda was throttled. Throttling is retried now, and it hasn't happened since.",
+  "An event with eighty sign-ups costs about three cents, mostly email. Standby. The problem isn't that people cancel. It's that we find out too late."
+]
