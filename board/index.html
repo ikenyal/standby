@@ -94,7 +94,7 @@ if (!cfg.api || !cfg.event || !cfg.key) {
 }
 
 function log(html) {
-  const t = new Date().toLocaleTimeString([], { hour12: false });
+  const t = new Date().toLocaleTimeString("en-GB");
   $("log").insertAdjacentHTML("afterbegin", `<div>${t}  ${html}</div>`);
 }
 
@@ -121,8 +121,8 @@ function render() {
   const d = last, now = d.server_time + (Date.now() / 1000 - d._fetched);
   $("title").textContent = d.title;
   document.title = `${d.title} — Standby`;
-  $("meta").textContent = `${d.seated}/${d.capacity} seats held · hold window ${d.hold_seconds}s · ${new Date(d.starts_at).toLocaleString()}`;
-  const fmt = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
+  $("meta").textContent = `${d.seated}/${d.capacity} seats held · hold window ${d.hold_seconds}s · ${new Date(d.starts_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+  const fmt = (iso) => iso ? new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
   const deadline = d.roster_deadline ? Date.parse(d.roster_deadline) / 1000 : null;
   const askBy = d.reconfirm_by ? Date.parse(d.reconfirm_by) / 1000 : null;
   $("banner").className = "banner" + (d.roster_locked ? " locked" : "");

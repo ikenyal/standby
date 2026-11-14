@@ -1,0 +1,28 @@
+flowchart TB
+  ORG([Organizer]) -->|"POST /events · /attendees"| API[API Gateway<br/>HTTP API]
+  API --> FAPI[Lambda · api]
+  FAPI <-->|"seat taken only if one is free<br/>(condition in the transaction)"| DB[(DynamoDB<br/>on-demand)]
+
+  subgraph HOLD["Step Functions Standard · one execution per seat hold"]
+    direction TB
+    INV[Send invite and wait<br/>.waitForTaskToken<br/>timeout = hold window] --> Q{Answer?}
+    Q -->|ACCEPTED| OK[Confirm seat]
+    Q -->|"DECLINED · timeout · send failed"| REL[Release seat, then offer it<br/>to the next person in line]
+  end
+
+  subgraph EVENT["Step Functions Standard · one execution per event"]
+    direction TB
+    W1[Wait until 'ask again'] --> ASK[Ask confirmed people again] --> W2[Wait until roster deadline] --> LOCK[Lock roster]
+  end
+
+  FAPI -->|start| INV
+  FAPI -->|start| W1
+  ASK -.->|"same hold workflow<br/>(mode = reconfirm)"| INV
+
+  INV -->|"METHOD:REQUEST<br/>UID = hold id"| SESO[SES · send]
+  REL -->|METHOD:CANCEL| SESO
+  SESO --> CAL([Attendee's calendar])
+  CAL -->|"taps Yes / No<br/>METHOD:REPLY email"| SESI[SES · receipt rule<br/>on a subdomain]
+  SESI --> S3[(S3<br/>raw reply · 7 days)]
+  SESI --> FIN[Lambda · read reply]
+  FIN -->|"UID → hold → task token<br/>SendTaskSuccess"| Q
