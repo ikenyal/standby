@@ -1,0 +1,18 @@
+TITLE
+Standby: the waitlist that lives in your calendar (AWS Weekend Challenge: No Pipeline, No Problem)
+
+DESCRIPTION
+A seat offered on the day is a seat nobody takes. Standby gives every seat as a calendar invite and lets the attendee's own Yes / No buttons decide: Yes keeps the seat, No or silence passes it to the next person. Days before the event, everyone who said Yes is asked again, so freed seats move while the waitlist can still plan. At the roster deadline, seats stop moving and the list is ready for the venue.
+
+Built in a weekend, all serverless: AWS Step Functions (one execution per seat hold, waiting on a task token), Amazon SES (sends invites and receives calendar replies), AWS Lambda, Amazon DynamoDB (seats only change inside a transaction that checks one is free), Amazon API Gateway, Amazon S3. Deployed with one `sam deploy`, no pipeline.
+
+The calendar scene is a live screen recording of two real Google Calendars (Gmail and Google Workspace), showing only the event's day cell. Narration: Amazon Polly.
+
+Code and measurements: https://github.com/ikenyal/standby
+
+0:00 The problem
+0:41 Live: a seat moves between two real calendars
+0:54 Asked again, roster deadline
+1:11 Architecture
+1:36 Measured
+1:57 Cost
