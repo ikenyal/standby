@@ -10,6 +10,8 @@ lets their calendar's own **Yes / No** buttons decide what happens next:
 - **No**, or **no answer before the hold runs out** — the event disappears from their calendar
   and appears in the next person's.
 
+**Demo video (2 min):** https://youtu.be/xcE3E--qAE0
+
 Attendees never open a website, never log in, never click a link. Seats move from one calendar
 to the next on their own. Everything is serverless and costs close to nothing while idle.
 
