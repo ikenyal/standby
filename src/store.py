@@ -282,23 +282,25 @@ def confirm(hid: str) -> bool:
         raise
 
 
-def release(hid: str, reason: str) -> dict | None:
-    """Free the seat held by `hid`. reason: DECLINED | EXPIRED | FAILED. Idempotent."""
+def release(hid: str, reason: str, expected: str | None = None) -> dict | None:
+    """Free the seat held by `hid`. reason: DECLINED | EXPIRED | FAILED. Idempotent.
+    `expected`: release only if the hold is still in exactly this status (checked in the write),
+    for callers that decided from an earlier read, like the reconciler."""
     h = get_hold(hid)
     if not h or h["status"] in ("DECLINED", "EXPIRED", "FAILED"):
         return None
+    allowed = (expected,) if expected else ("INVITED", "CONFIRMED", "PENDING", "RECONFIRMING")
     try:
         _retry(lambda: _client.transact_write_items(
             TransactItems=[
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
                     "UpdateExpression": "SET #s = :r, #seq = #seq + :one, released_at = :t REMOVE task_token",
-                    "ConditionExpression": "#s IN (:i, :c, :p, :rc)",
+                    "ConditionExpression": "#s IN (" + ", ".join(f":a{i}" for i in range(len(allowed))) + ")",
                     "ExpressionAttributeNames": {"#s": "status", "#seq": "sequence"},
                     "ExpressionAttributeValues": {
-                        ":r": {"S": reason}, ":i": {"S": "INVITED"}, ":c": {"S": "CONFIRMED"},
-                        ":p": {"S": "PENDING"}, ":rc": {"S": "RECONFIRMING"},
-                        ":one": {"N": "1"}, ":t": {"N": str(now())},
+                        ":r": {"S": reason}, ":one": {"N": "1"}, ":t": {"N": str(now())},
+                        **{f":a{i}": {"S": s} for i, s in enumerate(allowed)},
                     },
                 }},
                 {"Update": {

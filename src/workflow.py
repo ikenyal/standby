@@ -147,8 +147,10 @@ def reconcile_event(eid: str) -> dict:
             continue
         # The invite went out only if a task token was stored; otherwise there is nothing to cancel.
         reason = "EXPIRED" if hold.get("task_token") else "FAILED"
-        if store.release(hold["hold_id"], reason):
+        # Release only if the hold is still in the status we saw: the workflow may have confirmed
+        # it and ended between our read and DescribeExecution. Never release a CONFIRMED seat here.
+        if store.release(hold["hold_id"], reason, expected=hold["status"]):
             out["released"] += 1
-        out["promoted"] += len(settle_release(hold["hold_id"]))
+            out["promoted"] += len(settle_release(hold["hold_id"]))
     out["promoted"] += len(fill(eid))
     return out

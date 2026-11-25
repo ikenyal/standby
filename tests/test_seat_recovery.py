@@ -12,6 +12,7 @@ implementation that keeps the seat promise:
   2. If StartExecution fails right after a seat was taken, the seat must not be leaked forever:
      the next recovery pass must give that hold a workflow.
   3. A hold whose workflow ended without settling it must be released and its seat re-offered.
+  4. Recovery must never release a seat that was confirmed while it was looking at it.
 """
 import os
 import sys
@@ -123,10 +124,12 @@ class FakeStore:
         self.holds[hid].update(task_token=token, status="INVITED")
         self.att(self.holds[hid]["email"])["status"] = "INVITED"
 
-    def release(self, hid, reason):
+    def release(self, hid, reason, expected=None):
         h = self.holds.get(hid)
         if not h or h["status"] in RELEASED:
             return None
+        if expected is not None and h["status"] != expected:
+            return None  # conditional write failed: the hold moved on
         h["status"] = reason
         h["sequence"] += 1
         h.pop("task_token", None)
@@ -147,6 +150,7 @@ class FakeSfn:
     def __init__(self):
         self.executions = {}  # name -> status
         self.fail_next_start = None
+        self.on_describe = None  # hook: runs just before DescribeExecution answers
 
     def start_execution(self, stateMachineArn, name, input):
         if self.fail_next_start:
@@ -159,6 +163,8 @@ class FakeSfn:
 
     def describe_execution(self, executionArn):
         name = executionArn.rsplit(":", 1)[1]
+        if self.on_describe:
+            self.on_describe(name)
         if name not in self.executions:
             raise _client_error("ExecutionDoesNotExist", "DescribeExecution")
         return {"status": self.executions[name]}
@@ -254,6 +260,33 @@ def test_hold_with_ended_workflow_is_released():
     assert alan["status"] == "INVITED" and sfn.executions.get(alan.get("hold_id")) == "RUNNING", \
         f"freed seat not offered to the next person: {_state(fake, sfn)}"
     assert ("h1", "EXPIRED") in mail["cancel"], f"released attendee never got the CANCEL: {mail['cancel']}"
+
+
+def test_reconciler_never_releases_a_seat_confirmed_meanwhile():
+    """The reconciler reads the hold as INVITED; before it checks the workflow, the attendee's Yes
+    arrives, ConfirmSeat runs and the execution ends. The ended execution must not look 'stuck'."""
+    fake, sfn, mail = _setup(capacity=1)
+    fake.add("ada@example.org"); fake.add("alan@example.org")
+    workflow.fill("e1")
+    fake.set_hold_token("h1", "token-1")
+    fake.clock += 300
+
+    def ada_says_yes_now(name):
+        if name == "h1" and sfn.executions.get("h1") == "RUNNING":
+            fake.holds["h1"]["status"] = "CONFIRMED"
+            fake.holds["h1"].pop("task_token", None)
+            fake.att("ada@example.org")["status"] = "CONFIRMED"
+            sfn.executions["h1"] = "SUCCEEDED"
+    sfn.on_describe = ada_says_yes_now
+
+    reconcile = getattr(steps, "reconcile", None)
+    assert reconcile is not None, f"no recovery path exists. {_state(fake, sfn)}"
+    reconcile({}, None)
+    assert fake.holds["h1"]["status"] == "CONFIRMED", \
+        f"reconciler released a confirmed seat: {_state(fake, sfn)}"
+    assert fake.att("alan@example.org")["status"] == "WAITING" and fake.event["seated"] == 1, \
+        f"confirmed seat was given away: {_state(fake, sfn)}"
+    assert not mail["cancel"], f"confirmed attendee was sent a CANCEL: {mail['cancel']}"
 
 
 if __name__ == "__main__":

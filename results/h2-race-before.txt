@@ -1,0 +1,12 @@
+# Reconciler/confirm race test against 3321878 (H2 commit, before the follow-up fix), 2026-11-25T08:32:11Z
+$ python3 tests/test_seat_recovery.py
+pass test_release_retry_still_promotes_next_person
+{"_aws": {"Timestamp": 1800000300000, "CloudWatchMetrics": [{"Namespace": "Standby", "Dimensions": [[]], "Metrics": [{"Name": "HoldsRedriven", "Unit": "Count"}, {"Name": "HoldsReleasedByReconciler", "Unit": "Count"}, {"Name": "SeatsPromotedByReconciler", "Unit": "Count"}]}]}, "HoldsRedriven": 1, "HoldsReleasedByReconciler": 0, "SeatsPromotedByReconciler": 0, "OpenEvents": 1}
+pass test_start_execution_failure_does_not_leak_seat
+{"_aws": {"Timestamp": 1800000300000, "CloudWatchMetrics": [{"Namespace": "Standby", "Dimensions": [[]], "Metrics": [{"Name": "HoldsRedriven", "Unit": "Count"}, {"Name": "HoldsReleasedByReconciler", "Unit": "Count"}, {"Name": "SeatsPromotedByReconciler", "Unit": "Count"}]}]}, "HoldsRedriven": 0, "HoldsReleasedByReconciler": 1, "SeatsPromotedByReconciler": 1, "OpenEvents": 1}
+pass test_hold_with_ended_workflow_is_released
+{"_aws": {"Timestamp": 1800000300000, "CloudWatchMetrics": [{"Namespace": "Standby", "Dimensions": [[]], "Metrics": [{"Name": "HoldsRedriven", "Unit": "Count"}, {"Name": "HoldsReleasedByReconciler", "Unit": "Count"}, {"Name": "SeatsPromotedByReconciler", "Unit": "Count"}]}]}, "HoldsRedriven": 0, "HoldsReleasedByReconciler": 1, "SeatsPromotedByReconciler": 1, "OpenEvents": 1}
+FAIL test_reconciler_never_releases_a_seat_confirmed_meanwhile
+    AssertionError: reconciler released a confirmed seat: seated=1/1, attendees=[('ada@example.org', 'EXPIRED'), ('alan@example.org', 'INVITED')], holds=[('h1', 'EXPIRED'), ('h2', 'PENDING')], executions={'h1': 'SUCCEEDED', 'h2': 'RUNNING'}
+1 failed
+exit code: 1
