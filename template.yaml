@@ -42,9 +42,16 @@ Resources:
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
         - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: open_events, AttributeType: S }
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        # Sparse: only EVENT META items carry open_events, and only until the roster locks.
+        - IndexName: OpenEvents
+          KeySchema:
+            - { AttributeName: open_events, KeyType: HASH }
+          Projection: { ProjectionType: KEYS_ONLY }
 
   # ---------------------------------------------------------------- inbound mail
   InboundBucket:
@@ -190,6 +197,12 @@ Resources:
             TimeoutSecondsPath: $.hold_seconds
             ResultPath: $.reply
             Retry:
+              # SES throttled the invite: wait and send again instead of giving the seat away.
+              - ErrorEquals: [RetryableSendError]
+                IntervalSeconds: 2
+                BackoffRate: 2
+                MaxAttempts: 5
+                JitterStrategy: FULL
               - ErrorEquals: [Lambda.TooManyRequestsException, Lambda.ServiceException]
                 IntervalSeconds: 1
                 BackoffRate: 2
@@ -310,6 +323,11 @@ Resources:
               reconfirm_at.$: $.Item.reconfirm_at.S
               roster_deadline.$: $.Item.roster_deadline.S
             ResultPath: $.times
+            Retry:
+              - ErrorEquals: [States.TaskFailed]
+                IntervalSeconds: 1
+                BackoffRate: 2
+                MaxAttempts: 6
             Next: WaitToAskAgain
           WaitToAskAgain:
             Type: Wait
@@ -344,6 +362,32 @@ Resources:
                 BackoffRate: 2
                 MaxAttempts: 6
             End: true
+
+  # ---------------------------------------------------------------- reconciler
+  # Safety net for work a failed step left behind: a hold whose StartExecution was lost, a hold
+  # whose workflow ended without settling it, or a free seat nobody was offered. Every action is
+  # idempotent, so running it while workflows are active is safe.
+  ReconcileFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: steps.reconcile
+      Timeout: 120
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Table }
+        - StepFunctionsExecutionPolicy: { StateMachineName: !Sub "${AWS::StackName}-hold" }
+        - Statement:
+            - Effect: Allow
+              Action: states:DescribeExecution
+              Resource: !Sub arn:aws:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-hold:*
+            - Effect: Allow
+              Action: [ses:SendEmail, ses:SendRawEmail]
+              Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+      Events:
+        EveryFiveMinutes:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: rate(5 minutes)
+            RetryPolicy: { MaximumRetryAttempts: 0 }
 
   # ---------------------------------------------------------------- organizer API
   ApiFunction:

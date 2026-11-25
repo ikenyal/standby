@@ -2,7 +2,10 @@
 
   EVENT#<eid> / META            title, starts_at, ends_at, capacity, hold_seconds, seated, next_pos
   EVENT#<eid> / ATT#<pos:06d>   email, name, status, hold_id
-  HOLD#<hid>  / META            event_id, att_sk, email, name, status, task_token, sequence
+  HOLD#<hid>  / META            event_id, att_sk, email, name, status, task_token, sequence, cancel_sent
+
+GSI OpenEvents (sparse, keys only): `open_events` is set on EVENT META items until the roster
+locks, so the reconciler can list open events without scanning the table.
 
 Attendee status: WAITING -> INVITED -> CONFIRMED | DECLINED | EXPIRED
 `seated` counts INVITED + CONFIRMED and is only changed inside transactions
@@ -20,6 +23,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 TABLE = os.environ.get("TABLE_NAME", "standby")
+OPEN_INDEX = "OpenEvents"
 _ddb = boto3.resource("dynamodb")
 _table = _ddb.Table(TABLE)
 _client = boto3.client("dynamodb")
@@ -85,6 +89,7 @@ def create_event(*, title, starts_at, ends_at, capacity, hold_seconds, reconfirm
             "reconfirm_at": reconfirm_at, "reconfirm_by": reconfirm_by, "roster_deadline": roster_deadline,
             "reconfirm_by_ts": _ts(reconfirm_by), "roster_deadline_ts": _ts(roster_deadline),
             "roster_locked": False, "created_at": now(),
+            "open_events": "OPEN",  # sparse GSI key; removed when the roster locks
         },
         ConditionExpression="attribute_not_exists(pk)",
     )
@@ -192,17 +197,19 @@ def get_hold(hid: str) -> dict | None:
 
 
 def set_hold_token(hid: str, token: str) -> None:
+    # INVITED is accepted too: a retried invite task carries a new token for the same hold.
     _table.update_item(
         Key={"pk": hk(hid), "sk": "META"},
         UpdateExpression="SET task_token = :t, #s = :inv, invited_at = :n",
-        ConditionExpression="#s = :p",
+        ConditionExpression="#s IN (:p, :inv)",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":t": token, ":inv": "INVITED", ":p": "PENDING", ":n": now()},
     )
 
 
 def begin_reconfirm(hid: str, token: str) -> dict | None:
-    """CONFIRMED -> RECONFIRMING: ask a confirmed attendee again (new invite sequence)."""
+    """CONFIRMED -> RECONFIRMING: ask a confirmed attendee again (new invite sequence).
+    RECONFIRMING is accepted too, so a retried invite task can store its new token."""
     h = get_hold(hid)
     if not h:
         return None
@@ -212,7 +219,7 @@ def begin_reconfirm(hid: str, token: str) -> dict | None:
                 {"Update": {
                     "TableName": TABLE, "Key": {"pk": {"S": hk(hid)}, "sk": {"S": "META"}},
                     "UpdateExpression": "SET #s = :r, task_token = :t, #seq = #seq + :one, asked_again_at = :n",
-                    "ConditionExpression": "#s = :c",
+                    "ConditionExpression": "#s IN (:c, :r)",
                     "ExpressionAttributeNames": {"#s": "status", "#seq": "sequence"},
                     "ExpressionAttributeValues": {
                         ":r": {"S": "RECONFIRMING"}, ":c": {"S": "CONFIRMED"}, ":t": {"S": token},
@@ -238,7 +245,7 @@ def begin_reconfirm(hid: str, token: str) -> dict | None:
 def lock_roster(eid: str) -> None:
     _retry(lambda: _table.update_item(
         Key={"pk": ek(eid), "sk": "META"},
-        UpdateExpression="SET roster_locked = :t, locked_at = :n",
+        UpdateExpression="SET roster_locked = :t, locked_at = :n REMOVE open_events",
         ExpressionAttributeValues={":t": True, ":n": now()},
     ))
 
@@ -315,3 +322,22 @@ def release(hid: str, reason: str) -> dict | None:
             return None  # already released
         raise
     return get_hold(hid)
+
+
+def mark_cancel_sent(hid: str) -> None:
+    _table.update_item(
+        Key={"pk": hk(hid), "sk": "META"},
+        UpdateExpression="SET cancel_sent = :n",
+        ExpressionAttributeValues={":n": now()},
+    )
+
+
+def open_event_ids() -> list[str]:
+    """Events whose roster has not locked yet (sparse GSI, keys only)."""
+    ids, kw = [], {"IndexName": OPEN_INDEX, "KeyConditionExpression": Key("open_events").eq("OPEN")}
+    while True:
+        res = _table.query(**kw)
+        ids += [i["pk"].split("#", 1)[1] for i in res["Items"]]
+        if "LastEvaluatedKey" not in res:
+            return ids
+        kw["ExclusiveStartKey"] = res["LastEvaluatedKey"]

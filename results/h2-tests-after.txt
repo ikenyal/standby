@@ -1,0 +1,17 @@
+# H2 tests with the fix applied (working tree on top of d7095ba), 2026-11-25T08:30:10Z
+$ python3 tests/test_seat_recovery.py
+pass test_release_retry_still_promotes_next_person
+{"_aws": {"Timestamp": 1800000300000, "CloudWatchMetrics": [{"Namespace": "Standby", "Dimensions": [[]], "Metrics": [{"Name": "HoldsRedriven", "Unit": "Count"}, {"Name": "HoldsReleasedByReconciler", "Unit": "Count"}, {"Name": "SeatsPromotedByReconciler", "Unit": "Count"}]}]}, "HoldsRedriven": 1, "HoldsReleasedByReconciler": 0, "SeatsPromotedByReconciler": 0, "OpenEvents": 1}
+pass test_start_execution_failure_does_not_leak_seat
+{"_aws": {"Timestamp": 1800000300000, "CloudWatchMetrics": [{"Namespace": "Standby", "Dimensions": [[]], "Metrics": [{"Name": "HoldsRedriven", "Unit": "Count"}, {"Name": "HoldsReleasedByReconciler", "Unit": "Count"}, {"Name": "SeatsPromotedByReconciler", "Unit": "Count"}]}]}, "HoldsRedriven": 0, "HoldsReleasedByReconciler": 1, "SeatsPromotedByReconciler": 1, "OpenEvents": 1}
+pass test_hold_with_ended_workflow_is_released
+all passed
+exit code: 0
+
+$ python3 tests/test_ical.py
+pass test_unfold
+pass test_parse_reply
+pass test_not_a_reply
+pass test_reply_in_email
+pass test_build_roundtrip
+exit code: 0

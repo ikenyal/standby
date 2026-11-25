@@ -6,13 +6,16 @@ import time
 from datetime import datetime
 
 import boto3
+from botocore.config import Config
 
 from ical import build_calendar, build_invite_email
 
 ORGANIZER_EMAIL = os.environ.get("ORGANIZER_EMAIL", "host@example.com")
 ORGANIZER_NAME = os.environ.get("ORGANIZER_NAME", "Standby")
 MAIL_DOMAIN = os.environ.get("MAIL_DOMAIN", "example.com")
-_ses = boto3.client("sesv2")
+# Adaptive retries absorb short SES throttling (the sandbox allows ~1 message/s, and a cascade of
+# expiring holds sends many cancellations at once). steps.invite retries anything left over.
+_ses = boto3.client("sesv2", config=Config(retries={"mode": "adaptive", "max_attempts": 6}))
 
 
 def uid_for(hold_id: str) -> str:

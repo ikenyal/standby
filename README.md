@@ -88,6 +88,11 @@ flowchart LR
 A second, per-event Step Functions execution waits until each of those times (`Wait` with a
 timestamp, no scheduler), asks the confirmed attendees again, and locks the roster.
 
+**When a step fails halfway.** Every follow-up to a released seat (offer it to the next person,
+send the cancellation) runs again on a retry, so a throttled email never leaves a seat empty. A
+small reconciler runs every 5 minutes over open events: it restarts a hold whose workflow never
+started, releases a hold whose workflow ended without an answer, and offers any free seat.
+
 ## Deploy it
 
 You need: an AWS account, the AWS SAM CLI, and a domain (a subdomain is enough) whose DNS you can edit.
@@ -142,6 +147,7 @@ part in everything except email, which is how the load tests run without sending
 
 ```sh
 python3 tests/test_ical.py                              # parser and builder, no AWS needed
+python3 tests/test_seat_recovery.py                     # retries and recovery never leave a seat empty
 python3 scripts/burst.py --people 50 --capacity 30      # through the deployed API
 TABLE_NAME=<table> python3 scripts/compare_seating.py   # naive vs conditional seating
 ```

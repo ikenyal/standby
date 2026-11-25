@@ -54,9 +54,11 @@ def handle_raw(raw: bytes) -> str:
         return f"callback: {ps}"
     if status == "CONFIRMED" and ps == "DECLINED":
         # Changed their mind after confirming: free the seat right away.
-        released = store.release(hold["hold_id"], "DECLINED")
-        if released:
-            mailer.send_cancel(store.get_event(hold["event_id"]), released, "DECLINED")
-            workflow.fill(hold["event_id"])
+        store.release(hold["hold_id"], "DECLINED")
+        workflow.settle_release(hold["hold_id"])
         return "released after confirm"
+    if status == "DECLINED" and ps == "DECLINED":
+        # Lambda retried this reply after a failure: finish offering the seat (idempotent).
+        workflow.settle_release(hold["hold_id"])
+        return "settled already-released hold"
     return f"ignored: status={status} partstat={ps}"

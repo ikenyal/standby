@@ -1,0 +1,10 @@
+# H2 tests against HEAD d7095ba (src/ unmodified), 2026-11-25T08:29:22Z
+$ python3 tests/test_seat_recovery.py
+FAIL test_release_retry_still_promotes_next_person
+    AssertionError: seat left empty after the retry: next person was never offered it. seated=0/1, attendees=[('ada@example.org', 'EXPIRED'), ('alan@example.org', 'WAITING')], holds=[('h1', 'EXPIRED')], executions={'h1': 'RUNNING'}
+FAIL test_start_execution_failure_does_not_leak_seat
+    AssertionError: seat leaked: hold PENDING with no workflow and no recovery path exists. seated=1/1, attendees=[('ada@example.org', 'INVITED')], holds=[('h1', 'PENDING')], executions={}
+FAIL test_hold_with_ended_workflow_is_released
+    AssertionError: seat leaked: hold INVITED, its workflow ended, no recovery path exists. seated=1/1, attendees=[('ada@example.org', 'INVITED'), ('alan@example.org', 'WAITING')], holds=[('h1', 'INVITED')], executions={'h1': 'FAILED'}
+3 failed
+exit code: 1
