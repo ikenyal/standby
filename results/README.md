@@ -142,6 +142,27 @@ expired holds with 30 errors (AccessDenied): each first attempt freed the seat a
 the CANCEL; each retry found the hold already released and returned without offering the seat.
 Every execution still ended SUCCEEDED, so an alarm on failed executions would not have fired.
 
+**Same fault on the fixed stack (`h2-fault-after.jsonl`): 0 empty seats in 3 of 3 trials.** The fix
+(`3321878`, `9300958`) was deployed and confirmed by artifact checksum (`7bc069cd…` = `src/` at
+`ba086be`), then the identical run was repeated: same Deny on the Release role only, same 30 people,
+10 seats, 60 s holds, same trap cleanup (removal verified).
+
+| | Trial | Event | Seats empty while people wait | People offered a seat | Settled in | Hold executions |
+|---|---|---|---|---|---|---|
+| before | 1 | 5b60c70cc8 | **10 / 10** (20 waiting) | 10 / 30 | stalled (7 min watch) | 10 SUCCEEDED |
+| before | 2 | 1b1aa7b9f6 | **10 / 10** (20 waiting) | 10 / 30 | stalled (7 min watch) | 10 SUCCEEDED |
+| before | 3 | be684fd0df | **10 / 10** (20 waiting) | 10 / 30 | stalled (7 min watch) | 10 SUCCEEDED |
+| after | 1 | 5830f971e6 | **0** | 30 / 30 | 188 s | 30 FAILED |
+| after | 2 | d9cacd335f | **0** | 30 / 30 | 185 s | 30 FAILED |
+| after | 3 | 0d9d3a51e3 | **0** | 30 / 30 | 190 s | 13 FAILED, 17 SUCCEEDED* |
+
+After the fix every seat keeps moving even though no cancellation can be sent: the release step
+offers the seat to the next person first, then fails on the denied CANCEL, and the execution ends
+FAILED once its retries run out. That is the intended trade (the seat matters more than the courtesy
+email) and, unlike before, the failure is visible. \*17 releases in trial 3 were still retrying when the
+trap removed the Deny at 09:50:22Z; their CANCEL then went through and they ended SUCCEEDED. The
+trial had already settled with 0 empty seats.
+
 ## Things the runs found
 
 | Found by | Problem | Fix |
