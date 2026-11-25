@@ -108,6 +108,40 @@ Prices: [Step Functions](https://aws.amazon.com/step-functions/pricing/),
 [DynamoDB on-demand](https://aws.amazon.com/dynamodb/pricing/on-demand/),
 [S3](https://aws.amazon.com/s3/pricing/).
 
+## 7. Live cascade with real SES sends (H2 before/after)
+
+`scripts/cascade.py` against the deployed stack, Nov 25 2026. The stack was first confirmed to run
+`d7095ba` byte for byte: building `src/` at that commit gives the SAM artifact checksum the
+deployed functions were uploaded under, and the deployed template is semantically identical.
+30 people, 10 seats, 60 s holds, nobody answers. Attendees are SES mailbox simulator addresses,
+so every invite and cancellation really goes through SES (simulator mail does not count toward
+the 24-hour quota: `SentLast24Hours` stayed at 0, but it is limited by the send rate).
+
+**Natural cascade (`h2-live-before.jsonl`): did not reproduce H2.** 3 of 3 trials ended with 0
+seats empty while people waited, 0 lost offers, 0 failed or timed-out executions. The H2 failure
+needs an SES error to reach the release step, i.e. throttling that outlasts the SDK's own retries.
+That never happened: the account's **Lambda concurrency limit of 10** throttles the invite and
+release functions themselves (10 and 1 Lambda throttles, retried by Step Functions), which spreads
+the sends out. SES peaked at 20 sends per minute against a limit of 1 per second, the Invite and
+Release functions had 0 errors, and the longest release took 1.1 s.
+
+**Controlled fault injection (`h2-fault-before.jsonl`): reproduced H2 in 3 of 3 trials.** Same
+cascade, with one fault: a temporary inline Deny on `ses:SendEmail` / `ses:SendRawEmail` on the
+Release function's role only (`scripts/fault/deny-ses-release.json`, applied and removed by
+`scripts/fault_cascade.sh` with an exit trap; removal verified afterwards). No application code was
+changed, so the same run applies to the fixed stack.
+
+| Trial | Event | Seats empty while people wait | Waiting | Hold executions |
+|---|---|---|---|---|
+| 1 | 5b60c70cc8 | **10 / 10** | 20 | 10 SUCCEEDED, 0 failed, 0 timed out |
+| 2 | 1b1aa7b9f6 | **10 / 10** | 20 | 10 SUCCEEDED, 0 failed, 0 timed out |
+| 3 | be684fd0df | **10 / 10** | 20 | 10 SUCCEEDED, 0 failed, 0 timed out |
+
+The seats stayed empty for the whole 7-minute watch. The Release function ran 60 times for 30
+expired holds with 30 errors (AccessDenied): each first attempt freed the seat and then failed on
+the CANCEL; each retry found the hold already released and returned without offering the seat.
+Every execution still ended SUCCEEDED, so an alarm on failed executions would not have fired.
+
 ## Things the runs found
 
 | Found by | Problem | Fix |
