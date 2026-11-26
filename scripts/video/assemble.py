@@ -30,6 +30,7 @@ V = Path(os.environ.get("STANDBY_VIDEO_DIR", Path.home() / "Downloads" / "standb
 PARTS = V / "parts"
 SENTS = PARTS / "sentences"
 VOICE, LEAD, TAIL, GAP = "Brian", 0.4, 0.8, float(os.environ.get("STANDBY_SENTENCE_GAP", "0.75"))
+EDGE = 0.05  # silence kept at each end of a sentence when trimming
 NARRATION = json.loads(Path(os.environ.get("STANDBY_NARRATION", ROOT / "docs" / "video" / "narration.json")).read_text())
 CLIPS = {k: V / v for k, v in json.loads(os.environ.get("STANDBY_CLIPS", '{"s4": "live_clip.mp4"}')).items()}
 OUTPUT = os.environ.get("STANDBY_OUTPUT", "standby-demo.mp4")
@@ -51,14 +52,16 @@ def sentences(text):
 
 
 def polly(text):
-    """One sentence of Polly audio, cached by its text, with the edge silence trimmed so that the gap
-    between sentences is exactly GAP."""
+    """One sentence of Polly audio, cached by its text (the generative voice varies between calls, so a take is
+    kept once made). Edge silence is trimmed to EDGE seconds, so the gap between sentences is GAP plus a constant;
+    keeping a little silence stops the trim from clipping a soft first sound (such as a sentence-initial "A")."""
     key = hashlib.sha1(f"{VOICE}|{text}".encode()).hexdigest()[:16]
-    mp3, wav = SENTS / f"{key}.mp3", SENTS / f"{key}.wav"
-    if not wav.exists():
+    mp3, wav = SENTS / f"{key}.mp3", SENTS / f"{key}-e{int(EDGE * 1000)}.wav"
+    if not mp3.exists():
         run(["aws", "polly", "synthesize-speech", "--region", "us-east-1", "--engine", "generative", "--voice-id", VOICE,
              "--output-format", "mp3", "--sample-rate", "24000", "--text", text, str(mp3)])
-        trim = "silenceremove=start_periods=1:start_threshold=-50dB"
+    if not wav.exists():
+        trim = f"silenceremove=start_periods=1:start_threshold=-50dB:start_silence={EDGE}"
         run(["ffmpeg", "-y", "-v", "error", "-i", str(mp3), "-af", f"{trim},areverse,{trim},areverse",
              "-ar", "24000", "-ac", "1", str(wav)])
     return wav

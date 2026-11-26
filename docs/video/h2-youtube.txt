@@ -13,9 +13,9 @@ The review scenes are real recordings of both runs, cropped to the Claude Code c
 Code, commit by commit (tests → fix → live evidence → review excerpt): https://github.com/ikenyal/standby/compare/no-pipeline-submission...fix/h2-seat-recovery
 
 0:00 Standby, and the review
-0:23 The review run and the H2 finding
-0:41 Why it matters: a seat for nobody
-1:10 Fault injection, before the fix
-1:42 The fix: seat first, then email
-1:59 Same fault, fixed code
-2:17 The review, run again
+0:24 The review run and the H2 finding
+0:42 Why it matters: a seat for nobody
+1:11 Fault injection, before the fix
+1:44 The fix: seat first, then email
+2:01 Same fault, fixed code
+2:20 The review, run again
