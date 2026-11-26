@@ -3,21 +3,32 @@
 House style of the earlier Builder Center videos: Amazon Polly (Brian, generative), captions burned in
 one sentence at a time, short fades. Scene 4 is the live recording (scripts/video/live_clip.py).
   AWS_PROFILE=... uv run --no-project --with playwright python scripts/video/assemble.py
+
+Other videos reuse it through environment variables (defaults build the original video):
+  STANDBY_VIDEO_DIR  work and output folder          (~/Downloads/standby-video)
+  STANDBY_NARRATION  narration JSON, one entry/scene (docs/video/narration.json)
+  STANDBY_CLIPS      JSON {scene: clip path relative to the video dir} ({"s4": "live_clip.mp4"})
+  STANDBY_OUTPUT     final file name                 (standby-demo.mp4)
+  --audio-only       synthesize the narration and print scene durations, nothing else
+Narration audio is cached per scene and only re-synthesized when its text changes.
 """
 import html
 import json
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
-V = Path.home() / "Downloads" / "standby-video"
+V = Path(os.environ.get("STANDBY_VIDEO_DIR", Path.home() / "Downloads" / "standby-video")).expanduser()
 PARTS = V / "parts"
 VOICE, LEAD, TAIL = "Brian", 0.4, 0.8
-NARRATION = json.loads((ROOT / "docs" / "video" / "narration.json").read_text())
-CLIPS = {"s4": V / "live_clip.mp4"}
+NARRATION = json.loads(Path(os.environ.get("STANDBY_NARRATION", ROOT / "docs" / "video" / "narration.json")).read_text())
+CLIPS = {k: V / v for k, v in json.loads(os.environ.get("STANDBY_CLIPS", '{"s4": "live_clip.mp4"}')).items()}
+OUTPUT = os.environ.get("STANDBY_OUTPUT", "standby-demo.mp4")
 BAND_CSS = """body{margin:0;width:1920px;height:200px;background:#141311;display:flex;align-items:center;justify-content:center}
 .cap{font-family:-apple-system,'Helvetica Neue',sans-serif;font-size:40px;line-height:1.3;font-weight:600;color:#f1ede4;
 text-align:center;padding:0 120px}"""
@@ -35,11 +46,20 @@ def sentences(text):
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
 
+def narrate(i):
+    """Polly audio for scene i, cached: re-synthesized only when the text changes."""
+    sid, text = f"s{i + 1}", NARRATION[i]
+    audio, stamp = PARTS / f"{sid}.mp3", PARTS / f"{sid}.txt"
+    if not (audio.exists() and stamp.exists() and stamp.read_text() == text):
+        run(["aws", "polly", "synthesize-speech", "--region", "us-east-1", "--engine", "generative", "--voice-id", VOICE,
+             "--output-format", "mp3", "--sample-rate", "24000", "--text", text, str(audio)])
+        stamp.write_text(text)
+    return audio
+
+
 def scene(page, i):
     sid, text = f"s{i + 1}", NARRATION[i]
-    audio = PARTS / f"{sid}.mp3"
-    run(["aws", "polly", "synthesize-speech", "--region", "us-east-1", "--engine", "generative", "--voice-id", VOICE,
-         "--output-format", "mp3", "--sample-rate", "24000", "--text", text, str(audio)])
+    audio = narrate(i)
     a = duration(audio)
     clip = CLIPS.get(sid)
     total = max(LEAD + a + TAIL, duration(clip) / 1.25 if clip else 0)  # never speed a live clip past 1.25x
@@ -82,6 +102,11 @@ def scene(page, i):
 
 def main():
     PARTS.mkdir(parents=True, exist_ok=True)
+    if "--audio-only" in sys.argv:
+        for i in range(len(NARRATION)):
+            a = duration(narrate(i))
+            print(f"s{i + 1} narration {a:5.1f}s scene {LEAD + a + TAIL:5.1f}s")
+        return
     with sync_playwright() as p:
         b = p.chromium.launch(channel="chrome", headless=True)
         page = b.new_page(viewport={"width": 1920, "height": 200})
@@ -92,7 +117,7 @@ def main():
     joined = PARTS / "joined.mp4"
     run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(joined)])
     d = duration(joined)
-    final = V / "standby-demo.mp4"
+    final = V / OUTPUT
     run(["ffmpeg", "-y", "-v", "error", "-i", str(joined),
          "-vf", f"fade=t=in:st=0:d=0.5,fade=t=out:st={d - 0.6:.2f}:d=0.6",
          "-af", f"afade=t=in:st=0:d=0.3,afade=t=out:st={d - 0.6:.2f}:d=0.6",
