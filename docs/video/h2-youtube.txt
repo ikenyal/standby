@@ -1,0 +1,21 @@
+TITLE
+Standby: it could give a seat to nobody (AWS Builder Center Hackathon: Let the Agent Review you)
+
+DESCRIPTION
+Standby is a waitlist that lives in your calendar, which I built earlier: every seat is a calendar invite, and the attendee's own Yes / No decides who gets it. It could never give a seat to two people. I ran the Agent Toolkit Well-Architected Review skill on it in Claude Code, and it found a way to give a seat to nobody.
+
+The finding, H2 (Reliability, High): when a hold expires, the release step frees the seat, sends the cancellation, then offers the seat to the next person. If the email fails, Step Functions retries the step, the retry finds the seat already free and stops, and nobody is invited. A natural run did not reproduce it (the account's Lambda concurrency limit of 10 spread the emails out), so I injected the fault on purpose: a temporary IAM Deny on sending the cancellation email. 30 people, 10 seats, nobody answers. Before the fix, all 10 seats stayed empty in 3 of 3 trials, and every execution reported success, so no alarm would have fired.
+
+The fix is one rule: offer the seat first, then send the email, and do both again on every retry. Throttled emails are retried with backoff, and a reconciler every 5 minutes repairs whatever a failed step left behind. Same fault, fixed code: 0 empty seats and 30 of 30 people offered, in 3 of 3 trials; the executions now fail visibly. Run again on the fixed code, the review moved both H2 best practices (REL04-BP04, REL11-BP03) from High to Implemented, Implemented best practices rose from 54 to 59 of 261, and it found one new Medium (M9: a cancellation that keeps failing is never resent).
+
+The review scenes are real recordings of both runs, cropped to the Claude Code conversation and sped up. Narration: Amazon Polly.
+
+Code, commit by commit (tests → fix → live evidence → review excerpt): https://github.com/ikenyal/standby/compare/no-pipeline-submission...fix/h2-seat-recovery
+
+0:00 Standby, and the review
+0:23 The review run and the H2 finding
+0:41 Why it matters: a seat for nobody
+1:10 Fault injection, before the fix
+1:42 The fix: seat first, then email
+1:59 Same fault, fixed code
+2:17 The review, run again

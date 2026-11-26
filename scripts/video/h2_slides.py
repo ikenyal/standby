@@ -27,11 +27,12 @@ background:#2e2b26;color:#c9c3b6;margin-right:14px}
 """
 
 SLIDES = {
-"s1": """<div class="copy">© ikenyal</div><div class="stage"><div class="kicker">Serverless · calendar-RSVP waitlist</div>
-<div class="big" style="font-size:150px">Standby</div><div class="rule"></div>
-<div class="mid">The waitlist that lives in your calendar.</div>
-<div class="small" style="margin-top:24px">Every seat is a calendar invite. Yes keeps it. No, or silence, passes it on.</div>
-<div style="margin-top:40px"><span class="tag">Step Functions</span><span class="tag">SES</span><span class="tag">Lambda</span><span class="tag">DynamoDB</span></div></div>""",
+"s1": """<div class="copy">© ikenyal</div><div class="stage"><div class="kicker">Well-Architected Review · one fix, proven</div>
+<div class="big" style="font-size:120px">It could give a seat<br><span class="accent">to nobody.</span></div><div class="rule"></div>
+<div class="mid" style="font-size:52px">Standby, a calendar-RSVP waitlist I built earlier</div>
+<div class="small" style="margin-top:20px">Every seat is a calendar invite. Yes keeps it. No, or silence, passes it on.</div>
+<div style="margin-top:36px"><span class="tag">Step Functions</span><span class="tag">SES</span><span class="tag">Lambda</span><span class="tag">DynamoDB</span></div>
+<div class="small muted" style="font-size:28px;margin-top:40px">AWS Builder Center Hackathon: Let the Agent Review you</div></div>""",
 
 "s2": """<div class="stage" style="align-items:flex-end;text-align:right">
 <div style="width:900px"><div class="kicker">Claude Code · Agent Toolkit</div>
@@ -76,7 +77,9 @@ So: a temporary permission block on sending the cancellation email.</div>
 
 "end": """<div class="copy">© ikenyal</div><div class="stage"><div class="kicker">Standby</div>
 <div class="big">Never gave a seat to two people.<br><span class="ok">Now never gives a seat to nobody.</span></div>
-<div class="rule"></div><div class="small">github.com/ikenyal/standby · results/wa-review-h2-excerpt.md</div></div>""",
+<div class="rule"></div><div class="small">github.com/ikenyal/standby · branch <span class="accent">fix/h2-seat-recovery</span><br>
+<span class="muted" style="font-size:30px">tests → fix → live evidence → review excerpt (results/wa-review-h2-excerpt.md)</span></div>
+<div class="small muted" style="font-size:28px;margin-top:40px">Narration voiced by Amazon Polly.</div></div>""",
 }
 
 

@@ -25,8 +25,10 @@ BG = "0x141311"
 
 # Conversation column of each recording (x, y, w, h) and the part of the run that is shown (seconds).
 RUNS = {
-    "before": dict(src=H / "wa-review-before.mov", crop=(600, 100, 1170, 1520), end=455.0),
-    "after": dict(src=H / "wa-review-after.mov", crop=(520, 66, 1250, 1590), end=438.0),
+# `start` skips the first seconds, where another app window and the new-session picker (other project names)
+# are still on screen; the review session is up from 15.6 s (before) and 13.7 s (after).
+    "before": dict(src=H / "wa-review-before.mov", crop=(600, 100, 1170, 1520), start=16.0, end=455.0),
+    "after": dict(src=H / "wa-review-after.mov", crop=(520, 66, 1250, 1590), start=14.0, end=438.0),
 }
 # Result frames: (recording, time, region inside the conversation crop as x, y, w, h).
 FREEZE = {
@@ -47,11 +49,15 @@ def dur(p):
 
 
 def sentence_starts(i):
-    """Scene length and sentence start times, computed exactly like assemble.py's captions."""
+    """Scene length and sentence start times in the scene, from the timing assemble.py writes per scene
+    (falls back to an estimate before the narration exists)."""
+    timing = V / "parts" / f"s{i + 1}.json"
+    if timing.exists():
+        t = json.loads(timing.read_text())
+        return LEAD + t["audio"] + TAIL, [LEAD + s for s in t["starts"]]
     text = NARRATION[i]
-    mp3 = V / "parts" / f"s{i + 1}.mp3"
-    a = dur(mp3) if mp3.exists() else len(text.split()) / 2.5
     sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    a = len(text.split()) / 2.5
     starts, t = [], LEAD
     for s in sents:
         starts.append(t)
@@ -82,7 +88,8 @@ def timelapse(name, length, out, bg_png, label):
     x, y, w, h = r["crop"]
     ph = 800
     pw = round(w * ph / h / 2) * 2
-    speed = r["end"] / length
+    span = r["end"] - r["start"]
+    speed = span / length
     lab = labels(OUT / f"{out.stem}_labels.png", [
         (140, 852, label, 26, (154, 148, 136, 255), None),
         (140 + pw - 100, 60, f"×{speed:.0f}", 34, (20, 19, 17, 255), (240, 180, 90, 255))])
@@ -91,9 +98,9 @@ def timelapse(name, length, out, bg_png, label):
           f"drawbox=x=138:y=38:w={pw + 4}:h={ph + 4}:color=0x3a362f:t=2[t];"
           f"[t][2:v]overlay=0:0,format=yuv420p[v]")
     run(["ffmpeg", "-y", "-v", "error", "-loop", "1", "-framerate", "30", "-i", str(bg_png),
-         "-t", f"{r['end']:.2f}", "-i", str(r["src"]), "-i", str(lab), "-filter_complex", fc, "-map", "[v]",
+         "-ss", f"{r['start']:.2f}", "-t", f"{span:.2f}", "-i", str(r["src"]), "-i", str(lab), "-filter_complex", fc, "-map", "[v]",
          "-t", f"{length:.3f}", "-c:v", "libx264", "-crf", "18", "-an", str(out)])
-    print(f"{out.name}: {r['end']:.0f}s of recording at x{speed:.1f} -> {length:.1f}s")
+    print(f"{out.name}: {span:.0f}s of recording at x{speed:.1f} -> {length:.1f}s")
 
 
 def still(key, width):

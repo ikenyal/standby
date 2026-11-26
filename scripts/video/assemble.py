@@ -10,8 +10,11 @@ Other videos reuse it through environment variables (defaults build the original
   STANDBY_CLIPS      JSON {scene: clip path relative to the video dir} ({"s4": "live_clip.mp4"})
   STANDBY_OUTPUT     final file name                 (standby-demo.mp4)
   --audio-only       synthesize the narration and print scene durations, nothing else
-Narration audio is cached per scene and only re-synthesized when its text changes.
+  STANDBY_SENTENCE_GAP silence between sentences, seconds (0.75)
+Each sentence is synthesized on its own (cached by its text) and joined with a fixed silence, so the pause
+between sentences is always longer than a comma pause inside one; captions follow each sentence's real audio.
 """
+import hashlib
 import html
 import json
 import os
@@ -25,7 +28,8 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[2]
 V = Path(os.environ.get("STANDBY_VIDEO_DIR", Path.home() / "Downloads" / "standby-video")).expanduser()
 PARTS = V / "parts"
-VOICE, LEAD, TAIL = "Brian", 0.4, 0.8
+SENTS = PARTS / "sentences"
+VOICE, LEAD, TAIL, GAP = "Brian", 0.4, 0.8, float(os.environ.get("STANDBY_SENTENCE_GAP", "0.75"))
 NARRATION = json.loads(Path(os.environ.get("STANDBY_NARRATION", ROOT / "docs" / "video" / "narration.json")).read_text())
 CLIPS = {k: V / v for k, v in json.loads(os.environ.get("STANDBY_CLIPS", '{"s4": "live_clip.mp4"}')).items()}
 OUTPUT = os.environ.get("STANDBY_OUTPUT", "standby-demo.mp4")
@@ -46,14 +50,40 @@ def sentences(text):
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
 
-def narrate(i):
-    """Polly audio for scene i, cached: re-synthesized only when the text changes."""
-    sid, text = f"s{i + 1}", NARRATION[i]
-    audio, stamp = PARTS / f"{sid}.mp3", PARTS / f"{sid}.txt"
-    if not (audio.exists() and stamp.exists() and stamp.read_text() == text):
+def polly(text):
+    """One sentence of Polly audio, cached by its text, with the edge silence trimmed so that the gap
+    between sentences is exactly GAP."""
+    key = hashlib.sha1(f"{VOICE}|{text}".encode()).hexdigest()[:16]
+    mp3, wav = SENTS / f"{key}.mp3", SENTS / f"{key}.wav"
+    if not wav.exists():
         run(["aws", "polly", "synthesize-speech", "--region", "us-east-1", "--engine", "generative", "--voice-id", VOICE,
-             "--output-format", "mp3", "--sample-rate", "24000", "--text", text, str(audio)])
-        stamp.write_text(text)
+             "--output-format", "mp3", "--sample-rate", "24000", "--text", text, str(mp3)])
+        trim = "silenceremove=start_periods=1:start_threshold=-50dB"
+        run(["ffmpeg", "-y", "-v", "error", "-i", str(mp3), "-af", f"{trim},areverse,{trim},areverse",
+             "-ar", "24000", "-ac", "1", str(wav)])
+    return wav
+
+
+def narrate(i):
+    """Scene i's narration: each sentence synthesized on its own and joined with GAP seconds of silence, so a
+    pause between sentences is always longer than a pause inside one. Writes sN.wav and sN.json (sentence
+    start/end times within the audio, used for the captions and by other scripts)."""
+    sid, text = f"s{i + 1}", NARRATION[i]
+    wavs = [polly(s) for s in sentences(text)]
+    starts, ends, t = [], [], 0.0
+    for w in wavs:
+        d = duration(w)
+        starts.append(round(t, 3))
+        ends.append(round(t + d, 3))
+        t += d + GAP
+    audio = PARTS / f"{sid}.wav"
+    inputs, labels = [], []
+    for k, w in enumerate(wavs):
+        inputs += ["-i", str(w)]
+        labels.append(f"[{k}:a]" + (f"apad=pad_dur={GAP}" if k < len(wavs) - 1 else "anull") + f"[p{k}]")
+    fc = ";".join(labels) + ";" + "".join(f"[p{k}]" for k in range(len(wavs))) + f"concat=n={len(wavs)}:v=0:a=1[a]"
+    run(["ffmpeg", "-y", "-v", "error", *inputs, "-filter_complex", fc, "-map", "[a]", "-ar", "24000", str(audio)])
+    (PARTS / f"{sid}.json").write_text(json.dumps({"audio": duration(audio), "starts": starts, "ends": ends}))
     return audio
 
 
@@ -63,6 +93,7 @@ def scene(page, i):
     a = duration(audio)
     clip = CLIPS.get(sid)
     total = max(LEAD + a + TAIL, duration(clip) / 1.25 if clip else 0)  # never speed a live clip past 1.25x
+    timing = json.loads((PARTS / f"{sid}.json").read_text())
     sents = sentences(text)
     caps = []
     for k, s in enumerate(sents):
@@ -71,10 +102,7 @@ def scene(page, i):
         png = PARTS / f"{sid}-cap{k}.png"
         page.screenshot(path=str(png))
         caps.append(png)
-    starts, t = [], LEAD
-    for s in sents:
-        starts.append(t)
-        t += a * len(s) / sum(len(x) for x in sents)
+    starts = [LEAD + x for x in timing["starts"]]  # each caption shows from its sentence's real audio start
     ends = starts[1:] + [total]
     starts[0] = 0.0
     cmd = ["ffmpeg", "-y", "-v", "error", "-loop", "1", "-t", f"{total:.3f}", "-i", str(V / "slides" / f"{sid}.png")]
@@ -101,7 +129,7 @@ def scene(page, i):
 
 
 def main():
-    PARTS.mkdir(parents=True, exist_ok=True)
+    SENTS.mkdir(parents=True, exist_ok=True)
     if "--audio-only" in sys.argv:
         for i in range(len(NARRATION)):
             a = duration(narrate(i))
